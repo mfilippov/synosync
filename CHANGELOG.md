@@ -6,6 +6,11 @@ Notable changes to synosync. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A `go install` build spells its version as a release build does (`v0.1.0`, not
+  `0.1.0`).
+
 ## [0.1.0] - 2026-10-17
 
 First public release: a two-way Synology Drive sync client for Linux, macOS and
