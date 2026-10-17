@@ -116,7 +116,7 @@ jobs:
         # i.e. the short commit SHA. These carry no provenance attestation: only
         # the release job signs, and only a tag reaches it.
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-archives
           path: |
@@ -143,7 +143,7 @@ jobs:
       - name: Upload coverage profile
         # Publish coverage.out written by the gate step so it is downloadable.
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage
           path: coverage.out
@@ -272,7 +272,7 @@ jobs:
         # Publish the native profile the gate wrote so the per-OS numbers are
         # inspectable when the floor is ratcheted up.
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-${{ matrix.os }}
           path: coverage.out
@@ -330,7 +330,7 @@ jobs:
           subject-path: dist/bin/*.exe
 
       - name: Upload the unsigned binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unsigned
           path: dist/bin/*.exe
@@ -344,12 +344,12 @@ jobs:
     timeout-minutes: 60
     steps:
       - id: sign
-        uses: mfilippov/github-codesign/request-signature@d17bdb1b5f08fbcbec5f4d687a3fba5c8c476038 # v1.0.0
+        uses: mfilippov/github-codesign/request-signature@7e672775e21df021ad0878d651157fbef9c302f3 # v1.0.5
         with:
           artifact: unsigned
 
       - name: Upload the signed binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: signed
           path: ${{ steps.sign.outputs.dir }}
@@ -382,13 +382,13 @@ jobs:
 
       # Outside the checkout: release.sh refuses a tree with untracked files.
       - name: Download the signed binaries
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: signed
           path: ${{ runner.temp }}/signed
 
       - name: Download the unsigned binaries
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: unsigned
           path: ${{ runner.temp }}/unsigned
@@ -396,7 +396,7 @@ jobs:
       # The signed files came back through the self-hosted runner: prove they are the attested
       # GitHub-hosted build plus a valid signature by the pinned certificate.
       - name: Verify the signatures
-        uses: mfilippov/github-codesign/verify-signed@d17bdb1b5f08fbcbec5f4d687a3fba5c8c476038 # v1.0.0
+        uses: mfilippov/github-codesign/verify-signed@7e672775e21df021ad0878d651157fbef9c302f3 # v1.0.5
         with:
           signed: ${{ runner.temp }}/signed
           unsigned: ${{ runner.temp }}/unsigned
