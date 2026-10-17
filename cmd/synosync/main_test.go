@@ -102,8 +102,8 @@ func TestResolveVersionPrefersTheStampThenTheModule(t *testing.T) {
 		read    func() (*debug.BuildInfo, bool)
 		want    string
 	}{
-		{"0.1.0", info("v0.2.0"), "0.1.0"},
-		{"0.0.0-dev", info("v0.1.0"), "0.1.0"},
+		{"v0.1.0", info("v0.2.0"), "v0.1.0"},
+		{"0.0.0-dev", info("v0.1.0"), "v0.1.0"},
 		{"0.0.0-dev", info("(devel)"), "0.0.0-dev"},
 		{"0.0.0-dev", none, "0.0.0-dev"},
 	}

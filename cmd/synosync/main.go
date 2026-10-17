@@ -18,7 +18,7 @@ import (
 var version = "0.0.0-dev"
 
 // buildVersion is version, or - when the release build did not stamp it - the module version
-// the Go toolchain recorded, so `go install ...@v0.1.0` reports 0.1.0 rather than 0.0.0-dev. A
+// the Go toolchain recorded, so `go install ...@v0.1.0` reports v0.1.0 rather than 0.0.0-dev. A
 // build from a git checkout records a pseudo-version naming the commit (with +dirty for local
 // changes), which is more use in a bug report than the default; one without VCS information
 // records "(devel)" and keeps the default.
@@ -31,7 +31,7 @@ func resolveVersion(stamped string, read func() (*debug.BuildInfo, bool)) string
 		return stamped
 	}
 	if bi, ok := read(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
-		return strings.TrimPrefix(bi.Main.Version, "v")
+		return bi.Main.Version // "v0.1.0", spelled as a release build stamps it from the tag
 	}
 	return stamped
 }
