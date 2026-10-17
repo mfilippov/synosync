@@ -5,13 +5,13 @@ go 1.27
 toolchain go1.27.2
 
 require (
-	github.com/Microsoft/go-winio v0.6.2
+	github.com/Microsoft/go-winio v0.6.4
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/zalando/go-keyring v0.2.8
 	go.etcd.io/bbolt v1.5.0
-	golang.org/x/sys v0.47.0
-	golang.org/x/term v0.45.0
-	golang.org/x/text v0.41.0
+	golang.org/x/sys v0.49.0
+	golang.org/x/term v0.47.0
+	golang.org/x/text v0.43.0
 )
 
 require (
