@@ -1,0 +1,18 @@
+# Weekly dependency updates. GitHub Actions are pinned by commit SHA in ci.yml;
+# Dependabot updates the SHA and its version comment together.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go-modules:
+        patterns: ['*']
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']

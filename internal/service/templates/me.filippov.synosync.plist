@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  synosync launchd LaunchAgent template (macOS, per-user - no root required).
+
+  Install:
+    cp packaging/me.filippov.synosync.plist ~/Library/LaunchAgents/me.filippov.synosync.plist
+    # edit ProgramArguments[0] below if the binary is not at /usr/local/bin/synosync
+    # edit StandardOutPath/StandardErrorPath below: replace USERNAME with your
+    # short user name (launchd does NOT expand ~ or $HOME in those paths)
+    launchctl load -w ~/Library/LaunchAgents/me.filippov.synosync.plist
+
+  Uninstall:
+    launchctl unload -w ~/Library/LaunchAgents/me.filippov.synosync.plist
+    rm ~/Library/LaunchAgents/me.filippov.synosync.plist
+
+  The daemon runs in the foreground with its built-in size-rotating log file at
+  ~/Library/Logs/synosync/synosync.log (rotates past ~10 MiB, keeps 5 backups).
+  Deliberately NO log-stderr flag here (XML comments cannot spell the literal
+  dashes): unlike systemd's journal, launchd never rotates a StandardErrorPath
+  file, so routing the sync log to stderr would grow it without bound. The
+  Standard*Path files below capture only what still reaches stdout/stderr
+  (startup failures before the file logger is up, and crash output), so they
+  stay tiny.
+
+  Security: the log paths point under the user's own ~/Library/Logs (not a
+  world-writable, predictable location like /tmp). Logging to /tmp on a
+  multi-user Mac would expose sync logs to other users and invite
+  symlink/precreation attacks on the predictable filenames. ~/Library/Logs
+  exists by default and is owned by - and private to - the user. USERNAME must
+  be substituted because launchd requires absolute paths and does not expand ~.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>me.filippov.synosync</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/synosync</string>
+		<string>daemon</string>
+	</array>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<!-- Restart only on a crash (non-zero exit), not on a clean shutdown. -->
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+
+	<!-- Honest limitation: launchd has no StartLimitBurst and no failed state, so
+	     unlike the systemd unit this agent CANNOT be made to give up. The daemon
+	     exits non-zero on terminal errors too (not paired, certificate-pin
+	     mismatch, vanished session, client version rejected), and KeepAlive above
+	     relaunches every one of them. All this template can do is slow the loop
+	     down: ThrottleInterval is the minimum seconds between launches (the
+	     default is 10, i.e. a full TLS handshake against the NAS roughly every
+	     10-12 s, forever). 300 s makes a terminal error cost the NAS one handshake
+	     per five minutes instead. It stays a loop - after fixing the cause, or to
+	     stop the retries meanwhile, unload the agent:
+	       launchctl unload -w ~/Library/LaunchAgents/me.filippov.synosync.plist
+	     and check ~/Library/Logs/synosync/synosync.log for the terminal reason. -->
+	<key>ThrottleInterval</key>
+	<integer>300</integer>
+
+	<!-- Per-user paths under the user's private ~/Library/Logs, capturing only
+	     startup failures and crash output (the sync log itself rotates at
+	     ~/Library/Logs/synosync/synosync.log - see the header comment). Replace
+	     USERNAME with your short user name (launchd does not expand ~). -->
+	<key>StandardOutPath</key>
+	<string>/Users/USERNAME/Library/Logs/synosync.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/USERNAME/Library/Logs/synosync.err.log</string>
+</dict>
+</plist>

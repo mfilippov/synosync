@@ -1,0 +1,4 @@
+# The self-hosted runner the release workflow's sign job uses (mfilippov/github-codesign).
+self-hosted-runner:
+  labels:
+    - codesign

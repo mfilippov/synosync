@@ -1,0 +1,61 @@
+# golangci-lint configuration for synosync (schema v2).
+# See https://golangci-lint.run/usage/configuration/
+# v2 is required: the v1 line is EOL and its latest official release (v1.64.8,
+# built with Go 1.24) refuses to analyze this module's Go 1.27 target.
+version: "2"
+linters:
+  # Pin the full enforced set explicitly: `default: none` disables golangci-lint's
+  # implicit baseline so this file is the complete, unambiguous source of truth for
+  # what CI runs - the set can no longer silently gain or lose a linter on an
+  # upstream default change. The first block reproduces
+  # golangci-lint v2's `standard` baseline (errcheck/govet/ineffassign/staticcheck/
+  # unused); the second block is this project's additions.
+  default: none
+  enable:
+    - errcheck    # unchecked error returns
+    - govet       # suspicious / likely-wrong constructs
+    - ineffassign # assignments whose value is never used
+    - staticcheck # correctness, simplification, style
+    - unused      # unused symbols (dead code)
+    - bodyclose   # response bodies left unclosed
+    - gosec       # common security issues
+    - misspell    # misspellings in comments and strings
+    - revive      # exported-symbol doc comments, etc.
+    - unconvert   # redundant type conversions
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: false
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - gosec
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/mfilippov/synosync
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

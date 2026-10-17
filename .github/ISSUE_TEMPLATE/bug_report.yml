@@ -1,0 +1,50 @@
+name: Bug report
+description: Something synced wrongly, failed, or behaved unexpectedly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        See docs/TESTING.md ("Reporting a problem") for how to collect the reports below.
+        **Lost or overwritten data with no `_Conflict` copy?** Stop the daemon first, so the
+        state is preserved, and tick the box below.
+  - type: checkboxes
+    id: dataloss
+    attributes:
+      label: Data loss
+      options:
+        - label: A file was deleted or overwritten with no `_Conflict` copy, or a deletion I did not make was synced.
+  - type: input
+    id: version
+    attributes:
+      label: synosync version
+      description: The whole line `synosync version` prints.
+      placeholder: synosync 0.1.0-rc.1 (go1.27.2, linux/amd64)
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS and file system of the sync root
+      placeholder: Windows 11 / NTFS; DSM 7.2.2, Drive Server 4.0.3
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What you did, what you expected, what happened
+      description: Steps in order, with approximate times so the log can be matched.
+    validations:
+      required: true
+  - type: textarea
+    id: reports
+    attributes:
+      label: status / drops / conflicts
+      description: Output of `synosync status --json`, `synosync drops --json` and `synosync conflicts --json`, captured while the problem was visible.
+      render: json
+  - type: textarea
+    id: log
+    attributes:
+      label: Log excerpt
+      description: From `synosync log -n 2000`, around the time of the problem; `log_level debug` if you can. It contains file names. Redact what you need to; it never contains passwords or tokens.
+      render: text

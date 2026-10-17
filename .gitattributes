@@ -1,0 +1,16 @@
+# Normalize line endings: text files are stored with LF in the repo and checked
+# out with LF on every platform, so a cross-OS checkout never rewrites Go sources
+# or shell scripts to CRLF (which would break gofmt and `sh`).
+* text=auto eol=lf
+
+# Windows-only tooling stays CRLF on checkout.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary archives/blobs: never touch line endings.
+*.png binary
+*.jpg binary
+*.gz binary
+*.zip binary
+*.exe binary

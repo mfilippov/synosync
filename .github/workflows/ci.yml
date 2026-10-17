@@ -1,0 +1,446 @@
+name: CI
+
+# Every third-party action is pinned to a full commit SHA (the release tag it
+# corresponds to is kept in a trailing comment). Tags are mutable: with
+# contents: write + id-token: write granted to the release job, a compromised
+# action tag could exfiltrate the OIDC token or tamper with the signed
+# artifacts - a SHA pin makes the executed code immutable.
+# Bump deliberately: update the SHA and the tag comment together. The current
+# pins are the first majors that run on the Node 24 runner (checkout v7,
+# setup-go v7, upload-artifact v7, attest-build-provenance v4); the previous
+# node20 pins were being force-migrated by the runner and warned on every run.
+
+on:
+  push:
+    # master is the repository's default branch since the initial public release;
+    # the pre-release working branch (phases-0-1-skeleton-sproto-md4) is gone from
+    # the remote and no longer belongs here. main is kept for a future rename
+    # (a push landing a merge on the mainline must run CI, not just PRs).
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-lint:
+    name: build / test / lint
+    runs-on: ubuntu-latest
+    env:
+      # Pure-Go, no-cgo build (the project convention). Pin it
+      # explicitly so a CI runner that ships a C toolchain can't mask a cgo
+      # dependency creeping in.
+      CGO_ENABLED: '0'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          check-latest: true
+
+      - name: Compliance files present
+        # DESIGN §9 requires the clean-room provenance and attribution artifacts to
+        # exist and be reviewed alongside the license. Enforce their presence so the
+        # compliance gate is automated, not aspirational.
+        run: test -f LICENSE && test -f NOTICE && test -f PROVENANCE
+
+      - name: Verify modules
+        # go.sum integrity + a no-op `go mod tidy` diff so a stray/under-recorded
+        # dependency fails CI instead of landing silently.
+        run: |
+          go mod verify
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Build
+        run: go build ./...
+
+      - name: Cross-compile (no-cgo) for all release targets
+        # The release matrix ships linux/darwin/windows binaries for both amd64 and
+        # arm64 (scripts/release.sh), but the test job only runs on Linux/amd64, so a
+        # per-OS or per-arch build break (the windows-tagged IPC/lock files, the
+        # unix/windows split files, an arch-specific syscall path) would slip through.
+        # Cross-compile every GOOS×GOARCH the release ships here to catch it.
+        # Calls the `make crossbuild` target so the matrix
+        # lives in one place (Makefile CROSS_OS/CROSS_ARCH) instead of being
+        # duplicated inline here.
+        run: make crossbuild
+
+      - name: Cross-vet (test code included) for all release GOOS
+        # crossbuild compiles only production code; go vet also type-checks the
+        # _test.go tree, so a per-OS compile break in test code (an untagged
+        # unix-only syscall - the class that turned the whole windows-latest job
+        # red) fails fast here instead of only on the native
+        # runner matrix below.
+        run: make vet-cross
+
+      - name: Build integration harness (type-check only)
+        # test/integration/* sits behind //go:build integration + an SYNOSYNC_IT_*
+        # env gate, so no default CI step compiles it. Without this gate a refactor
+        # of engine.New / actions.Client / store signatures would stay green while
+        # the harness silently rots. A live DSM is not needed - this only
+        # type-checks/vets the tagged tree.
+        run: |
+          go build -tags integration ./test/integration/...
+          go vet -tags integration ./test/integration/...
+
+      - name: Build release archives + license gate (Apache-2.0 §4(d))
+        # scripts/release.sh must bundle LICENSE/NOTICE into every archive, not
+        # just leave them in the repo - Apache-2.0 §4(d) requires shipping them
+        # with the derivative. The "Compliance files present" step above only
+        # checks the repo tree, so build here and assert the manifest carries the
+        # license + NOTICE. The grep lives in
+        # `make license-check` (scripts/license-check.sh) so the PR and release
+        # jobs share one source of truth.
+        #
+        # The FULL matrix, not the former linux/amd64 smoke-check: the archives
+        # are uploaded below so a branch can be exercised as a real binary before
+        # anyone cuts a tag, and the packaging step is where a per-GOOS
+        # regression (the zip arm, the staging chmod) actually lives - building
+        # one platform never reached it. license-check walks every archive in
+        # dist/, so this also gives the PR job the per-platform compliance gate
+        # that only the release job used to have. Cost is six Go cross-compiles.
+        run: |
+          bash scripts/release.sh
+          make license-check
+
+      - name: Upload release archives
+        # Publish dist/ so a reviewer can download and RUN the built product from
+        # a branch - the release job only ever attaches archives to a v* tag, so
+        # without this there is no way to try a build without tagging one.
+        # Untagged builds stamp the version from `git describe --tags --always`,
+        # i.e. the short commit SHA. These carry no provenance attestation: only
+        # the release job signs, and only a tag reaches it.
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-archives
+          path: |
+            dist/synosync-*.tar.gz
+            dist/synosync-*.zip
+            dist/SHA256SUMS
+          if-no-files-found: warn
+
+      - name: Coverage-gate parser self-test
+        # Guards scripts/coverage-gate.sh against parser regressions before it
+        # gates the real suite. Fast - drives the gate on synthetic fixtures, no
+        # go test run. See scripts/coverage-gate_test.sh.
+        run: make cover-gate-selftest
+
+      - name: Test (coverage gate)
+        # Runs the suite once with -race, writes coverage.out, and enforces the
+        # DESIGN §12 per-package coverage floor (≥80%) - fails the build on a
+        # regression. See scripts/coverage-gate.sh. -race needs cgo, so override
+        # the job-wide CGO_ENABLED=0 for this step only.
+        run: make cover-check
+        env:
+          CGO_ENABLED: '1'
+
+      - name: Upload coverage profile
+        # Publish coverage.out written by the gate step so it is downloadable.
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage
+          path: coverage.out
+          if-no-files-found: ignore
+
+      - name: Vulnerability scan (all release GOOS)
+        # govulncheck against the call graph so a known-vulnerable stdlib/dependency
+        # symbol that is actually reachable fails CI. Pin the
+        # version (not @latest) so the security gate is reproducible - the analyzer
+        # and its DB schema can't shift under us between runs (the Makefile owns the
+        # GOVULNCHECK_VERSION pin; bump deliberately).
+        #
+        # Reachability is computed for ONE build context, so the former single
+        # GOOS=linux run never analysed the windows/darwin-tagged surface - go-winio
+        # (imported only by listen_windows.go: the DACL'd named pipe that IS the
+        # Windows IPC security boundary), go-keyring's wincred arm, service_windows.go,
+        # the x/sys/windows syscalls. A CVE in any of them passed with exit 0 and a v*
+        # tag shipped signed, vulnerable Windows archives. `make vulncheck-cross` runs
+        # every release GOOS.
+        run: make vulncheck-cross
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          # install-mode goinstall builds golangci-lint from source with the
+          # Go 1.27 toolchain set up above, so it can analyze this module's
+          # Go 1.27 target. A golangci-lint built by an OLDER toolchain cannot:
+          # its go/types rejects Go 1.27's own stdlib (math/rand/v2 now declares
+          # generic methods), which is why the version below moved to v2.13.2 -
+          # v2.12.2 built with 1.27 type-checks fine but crashes analysing
+          # internal/poll under GOOS=linux. v2.14.0 followed for Go 1.27.2, whose
+          # export data (version 5) v2.13.2's x/tools refuses to decode: every
+          # package failed to type-check and the run exited 7. The latest official v1 (v1.64.8) is built
+          # with Go 1.24 and rejects newer Go targets; .golangci.yml uses the
+          # v2 config schema.
+          install-mode: goinstall
+          version: v2.14.0
+          args: --timeout=5m
+
+      - name: Lint (all release GOOS)
+        # The action above analyses the linux build context only, so no
+        # `_windows.go`/`_darwin.go` file was ever linted - the same single-GOOS
+        # enforcement gap vet-cross closes for compilation.
+        # `make lint-install` owns the version pin (same GOLANGCI_VERSION the local
+        # `make lint` checks against), so this step does not depend on the action's
+        # installation leaking onto PATH.
+        run: make lint-install lint-cross
+
+  build-vet-os:
+    name: build / vet / cover (${{ matrix.os }})
+    # Compile and vet on real Windows and macOS runners so the per-OS source
+    # (listen_windows.go, lock_{unix,windows}.go, rename_noreplace_*, openflags_*,
+    # syncdir_*) is exercised natively, not only via Linux cross-compilation.
+    # This job owns the -race run and the coverage floor for its
+    # own build context (CROSS_THRESHOLD); the Linux job owns the authoritative
+    # DESIGN §12 floor, plus lint/govulncheck for all three GOOS.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          check-latest: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Service-script self-test (Windows)
+        # Parser check + run-as argument logic for the shipped Windows installer
+        # - the same role scripts/coverage-gate_test.sh plays for the Linux gate.
+        # It creates/starts/deletes nothing and needs no
+        # elevation; the LSA read-back case skips itself when the runner's token
+        # may not read LSA policy. No `make` here: the GitHub Windows image has no
+        # guaranteed make, and this test is Windows-only by construction.
+        if: runner.os == 'Windows'
+        run: pwsh -NoProfile -NonInteractive -File internal/service/templates/install-service_test.ps1
+
+      - name: Service-script self-test (Windows PowerShell 5.1)
+        # The SAME self-test under the host the product actually invokes.
+        # scm_windows.go runs `powershell`, which is 5.1 on every stock Windows
+        # box, and `service install` prints a command for the user to paste into
+        # an elevated PowerShell - also 5.1 for most people. Checking only pwsh
+        # left both paths untested and they were broken: pwsh defaults to UTF-8
+        # while 5.1 reads a BOM-less .ps1 in the ANSI code page, so the installer's
+        # non-ASCII characters decoded into stray quote marks and the whole script
+        # failed to parse.
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File internal/service/templates/install-service_test.ps1
+
+      - name: Test (race + per-OS coverage gate)
+        # Run the suite with the race detector natively on Windows and macOS so the
+        # per-OS code (listen_windows.go, lock_{unix,windows}.go, openflags_*) is
+        # checked for data races on its real platform, not only via the Linux -race
+        # job. -race needs cgo, so override the job-wide
+        # CGO_ENABLED=0 (the GitHub-hosted windows/macos images ship a C toolchain).
+        #
+        # This goes through the coverage gate rather than a
+        # bare `go test`: the Linux job's floor is computed from a Linux compilation,
+        # so the windows/darwin-tagged files (listen_windows 92 lines, pipesecret,
+        # rename_noreplace_{windows,darwin}, syncdir/setmeta/openflags/statdev/
+        # nametoolong/diskfull_windows, lock_windows) were in NO gated denominator and
+        # a regression - or their tests silently disappearing - reached a release with
+        # no red signal. The gate enforces its own CROSS_THRESHOLD here (scripts/
+        # coverage-gate.sh; it also fails when a gated package produces no coverage
+        # line at all) and never relaxes the Linux floor. Invoked via bash, not make:
+        # the GitHub Windows image has no guaranteed make.
+        shell: bash
+        run: bash scripts/coverage-gate.sh
+        env:
+          CGO_ENABLED: '1'
+
+      - name: Upload coverage profile (${{ matrix.os }})
+        # Publish the native profile the gate wrote so the per-OS numbers are
+        # inspectable when the floor is ratcheted up.
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-${{ matrix.os }}
+          path: coverage.out
+          if-no-files-found: ignore
+
+  # Tag-triggered release, in three jobs so the Windows binaries ship Authenticode-signed
+  # (mfilippov/github-codesign: the key is on a YubiKey on a signing host; the maintainer
+  # approves each request with a PIN and a touch). build-windows builds them on a GitHub-hosted
+  # runner and attests them, since sign-pending refuses anything without that provenance; sign
+  # waits on the codesign runner for the approval; release proves the signed files are the
+  # attested build plus a signature by the pinned certificate, then packages every platform -
+  # the Windows archives from the signed files - and publishes a draft release.
+  build-windows:
+    # Only this repository releases: a fork pushing a v* tag would otherwise queue the sign job
+    # for a runner and an environment it does not have. sign and release need this job, so they
+    # are skipped with it.
+    if: github.repository == 'mfilippov/synosync' && startsWith(github.ref, 'refs/tags/v')
+    needs: [build-test-lint, build-vet-os]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # build provenance (Sigstore)
+      attestations: write
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # release.sh derives the version from `git describe --tags`; fetch tags.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          check-latest: true
+
+      - name: Build the Windows binaries
+        # The same script, flags and version stamp as every other archive; only the packaging
+        # waits until the binaries come back signed.
+        run: BIN_ONLY=1 bash scripts/release.sh windows/amd64 windows/arm64
+
+      - name: SHA256
+        # On the run page, to compare with what sign-pending shows before signing.
+        run: |
+          for f in dist/bin/*.exe; do
+            echo "$(basename "$f"): \`$(sha256sum "$f" | cut -c1-64)\`" >>"$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Attest the unsigned binaries
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/bin/*.exe
+
+      - name: Upload the unsigned binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unsigned
+          path: dist/bin/*.exe
+          if-no-files-found: error
+
+  sign:
+    needs: build-windows
+    runs-on: codesign
+    # Required reviewer and v* tags only: the job does not reach the runner before approval.
+    environment: codesign
+    timeout-minutes: 60
+    steps:
+      - id: sign
+        uses: mfilippov/github-codesign/request-signature@d17bdb1b5f08fbcbec5f4d687a3fba5c8c476038 # v1.0.0
+        with:
+          artifact: unsigned
+
+      - name: Upload the signed binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signed
+          path: ${{ steps.sign.outputs.dir }}
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: sign
+    runs-on: ubuntu-latest
+    permissions:
+      # gh release create; the workflow-wide default is read-only.
+      contents: write
+      # attest-build-provenance mints an OIDC token for Sigstore and records the provenance.
+      id-token: write
+      attestations: write
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          check-latest: true
+
+      # Outside the checkout: release.sh refuses a tree with untracked files.
+      - name: Download the signed binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: signed
+          path: ${{ runner.temp }}/signed
+
+      - name: Download the unsigned binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unsigned
+          path: ${{ runner.temp }}/unsigned
+
+      # The signed files came back through the self-hosted runner: prove they are the attested
+      # GitHub-hosted build plus a valid signature by the pinned certificate.
+      - name: Verify the signatures
+        uses: mfilippov/github-codesign/verify-signed@d17bdb1b5f08fbcbec5f4d687a3fba5c8c476038 # v1.0.0
+        with:
+          signed: ${{ runner.temp }}/signed
+          unsigned: ${{ runner.temp }}/unsigned
+
+      - name: Cross-build release archives
+        # Every platform as usual, except that the Windows archives take the signed binaries.
+        run: PREBUILT_DIR="${RUNNER_TEMP}/signed" bash scripts/release.sh
+
+      - name: The Windows archives carry the signed binaries
+        # release.sh builds a binary itself when the prebuilt one is missing, so a wrong path
+        # would ship an unsigned exe without a word. Compare the bytes.
+        run: |
+          for a in amd64 arm64; do
+            z=$(ls dist/synosync-*-windows-"$a".zip)
+            got=$(unzip -p "$z" '*/synosync.exe' | sha256sum | cut -c1-64)
+            want=$(sha256sum "${RUNNER_TEMP}/signed/synosync-windows-$a.exe" | cut -c1-64)
+            if [ "$got" != "$want" ]; then
+              echo "::error::$z does not hold the signed synosync.exe"
+              exit 1
+            fi
+          done
+
+      - name: Every archive carries license (Apache-2.0 §4(d))
+        # LICENSE, NOTICE and the platform's service unit in EVERY archive, so a packaging
+        # regression on one GOOS cannot ship a non-compliant artifact.
+        run: make license-check
+
+      - name: Attest build provenance
+        # Binds each archive and SHA256SUMS to this repository, workflow and commit; the
+        # manifest alone only guards against accidental corruption. Verify with:
+        #   gh attestation verify <archive> --repo mfilippov/synosync
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/synosync-*.tar.gz
+            dist/synosync-*.zip
+            dist/SHA256SUMS
+
+      - name: Create draft release
+        # A draft: the maintainer publishes it after looking at what the signing produced.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" --draft \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/synosync-*.tar.gz dist/synosync-*.zip dist/SHA256SUMS

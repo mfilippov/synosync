@@ -1,0 +1,57 @@
+# synosync systemd user-service unit template.
+#
+# Install as a per-user service (no root required):
+#   mkdir -p ~/.config/systemd/user
+#   cp packaging/synosync.service ~/.config/systemd/user/synosync.service
+#   # ensure the binary is on the ExecStart path below (default: ~/.local/bin/synosync)
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now synosync.service
+#   # to keep the daemon running after logout: loginctl enable-linger "$USER"
+#
+# The daemon runs in the foreground and logs to stderr (--log-stderr), which
+# systemd captures into the journal:
+#   journalctl --user -u synosync -f
+#
+# Adjust ExecStart if the binary lives elsewhere; %h expands to the user's home.
+
+[Unit]
+Description=synosync - Synology Drive two-way sync daemon
+Documentation=https://github.com/mfilippov/synosync
+# No network-ordering directives here: this is a `systemctl --user` unit, and the
+# user service manager has no network-online.target to order against (it is a
+# system-manager target), so After=/Wants=network-online.target would be a silent
+# no-op documenting a guarantee it cannot provide. The daemon's own connection
+# bring-up backoff tolerates the network being briefly unavailable at start, so
+# no ordering is needed.
+#
+# Bound the restart loop. Restart=on-failure below also fires on the daemon's
+# terminal exits (not paired, certificate-pin mismatch, vanished session, client
+# version rejected) - none of which a restart can fix, so without a start limit
+# the unit would re-run a full TLS handshake against the NAS every RestartSec
+# forever and never enter `failed`. Transient faults (the NAS rebooting, the
+# network dropping) are absorbed by the daemon's own reconnect backoff without
+# it exiting, so a restart here already means something a supervisor cannot
+# retry away: 5 starts per 300 s leaves room for a couple of genuine crashes
+# while turning a terminal error into a visible `failed` state within ~25 s.
+# After fixing the cause, `systemctl --user reset-failed synosync` (or
+# `restart`) clears the limit.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/synosync daemon --log-stderr
+Restart=on-failure
+RestartSec=5
+
+# Non-breaking sandbox hardening. These tighten the process without restricting
+# what the daemon legitimately needs: it talks to Synology over HTTPS, listens on
+# a per-user local socket, and reads/writes its state + sync tree under $HOME - so
+# ProtectHome / ProtectSystem=strict are intentionally NOT set (they would break it).
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=default.target

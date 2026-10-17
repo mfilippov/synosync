@@ -1,0 +1,27 @@
+synosync
+Copyright 2026 Mikhail Filippov
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes an independent, clean-room reimplementation of the
+Synology Drive "sproto" wire protocol. It is not derived from, and contains no
+code, specification text, constants, or tables copied from, any proprietary
+Synology source or specification. See PROVENANCE for the clean-room methodology
+and the statement of non-derivation.
+
+----------------------------------------------------------------------
+
+Third-party Go modules used by this product, each under its own license
+(authoritative versions in go.mod / go.sum, full texts in the module sources):
+
+  go.etcd.io/bbolt                MIT License
+  github.com/fsnotify/fsnotify    BSD 3-Clause License
+  github.com/zalando/go-keyring   MIT License
+  github.com/Microsoft/go-winio   MIT License           (Windows builds only)
+  github.com/danieljoos/wincred   MIT License           (indirect; Windows keychain)
+  github.com/godbus/dbus/v5       BSD 2-Clause License   (indirect; Linux keychain)
+  golang.org/x/sys                BSD 3-Clause License
+  golang.org/x/term               BSD 3-Clause License
+  golang.org/x/text               BSD 3-Clause License
+
+All other functionality is built on the Go standard library.

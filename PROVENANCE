@@ -1,0 +1,59 @@
+PROVENANCE - clean-room origin of the sproto protocol implementation
+=====================================================================
+
+This file records how the Synology Drive wire protocol ("sproto") implemented in
+`internal/sproto` (and the action layer in `internal/actions`) was produced, and
+states its non-derivation from proprietary material. It is the compliance-gate
+artifact referenced by docs/DESIGN.md §9 and is reviewed alongside LICENSE.
+
+Method
+------
+The protocol implementation is an independent, clean-room reimplementation built
+solely from observation of the wire (the bytes exchanged over the network) and
+from the behaviour of a running server. The implementation derives the framing,
+the PStream/PObject encoding, the handshake sequence, and the action set from
+that observation only.
+
+Non-derivation
+--------------
+The following were NOT used and NOT copied into this codebase:
+
+  * any proprietary Synology source code, in whole or in part;
+  * any private/internal protocol specification document;
+  * verbatim identifiers, constant names, error-code tables, struct layouts, or
+    comment text taken from such a specification or from decompiled binaries.
+
+Names, constants, and error codes that appear on the wire are reproduced only to
+the minimal extent required for interoperability (a protocol cannot be spoken
+without sending the bytes the peer expects); they are facts of the wire format,
+not creative expression copied from a source.
+
+Scope and security posture
+--------------------------
+Consistent with docs/DESIGN.md §1/§9, the client speaks to Synology only over
+TLS. The plaintext-HTTP fallback and the obfuscated login encryption that exist
+in the official protocol are intentionally NOT implemented; the password is sent
+in the clear only inside the TLS channel, and the server certificate is pinned at
+the application layer (SPKI, SHA-256). No proprietary cryptographic routine is
+reimplemented; MD4 (required by the protocol for content hashing) is implemented
+from its public RFC 1320 specification (`internal/md4`).
+
+Default exclusion rules
+-----------------------
+The default exclusions a new pairing starts with (`internal/config/exclude.go`:
+the home view's `Photos` and `Backup`, the file and folder names the NAS and the
+operating systems keep for themselves, and temporary-file suffixes) match what
+Synology's own Drive Client does, so the two behave alike out of the box. They were
+established by observing that client as a user can: its setup wizard and logs, the
+plain-text rule files it installs, the strings it carries for those folder names,
+and its traffic to a test server through a TLS-terminating proxy. Synology also
+documents these rules publicly in its Drive Client help ("Sync Task Rules"). No code
+was disassembled, decompiled or copied; the lists are facts about interoperable
+behaviour, reproduced to the extent needed to match it.
+
+Review obligation
+-----------------
+Any change that touches `internal/sproto` or `internal/actions` must preserve the
+above: contributions derived from proprietary sources or leaked specifications
+are not accepted. This statement, the LICENSE (Apache-2.0), and the NOTICE file
+are checked together at review time, and their presence is enforced in CI.

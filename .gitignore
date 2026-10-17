@@ -1,0 +1,60 @@
+# If you prefer the allow list template instead of the deny list, see community template:
+# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
+#
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Code coverage profiles and other test artifacts
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# env file
+.env
+
+# Editor/IDE
+.idea/
+.vscode/
+.zed/
+*.swp
+*.swo
+*~
+
+# OS metadata. A contributor on macOS or Windows otherwise commits these into
+# a tree that is checked out on all three.
+.DS_Store
+.AppleDouble
+Thumbs.db
+Desktop.ini
+
+# AI / agent tool workspaces. These hold local run output and per-tool config,
+# not project source, and a `git add -A` sweeps in whatever is not listed here.
+.claude/
+.codex
+.cursor/
+.aider*
+.opencode/
+
+# Build artifact
+/synosync
+
+# Release output
+/dist/
+
+# Host-local tool binaries installed by `make vulncheck-cross`
+/.tools/
