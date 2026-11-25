@@ -185,7 +185,13 @@ func renderStatusOpts(w io.Writer, r ipc.StatusReport, verbose bool) {
 		// Below the stuck threshold a failed op waits for the next drain, which runs after
 		// the current long poll returns - minutes on an idle sync. Say so, and how to start
 		// that pass sooner; not "retry now", since a paced or blocked op still waits its turn.
-		line("Waiting", "%d operation(s) failed their last attempt and will be retried (synosync sync starts the next pass now)", r.Retrying)
+		// The hint only while a pass can actually run: paused or without a connection, the
+		// trigger just waits like everything else.
+		hint := ""
+		if !r.Paused && !r.Connection.Connecting && !r.Connection.Reconnecting && !r.Connection.Paused {
+			hint = " (synosync sync starts the next pass now)"
+		}
+		line("Waiting", "%d operation(s) failed their last attempt and will be retried%s", r.Retrying, hint)
 		listFailing(r.Retrying, r.RetryingOps)
 	}
 	if r.DiskFull {

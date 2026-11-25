@@ -304,7 +304,7 @@ func TestPollAnsweredClassifiesPollOutcomes(t *testing.T) {
 		{"answered alongside a wake", nil, true, true, false, "answered"},
 		{"full poll timed out", deadline, true, false, false, "miss"},
 		{"broken read", broken, true, false, false, "miss"},
-		{"fairness pass reached its planned end", deadline, false, false, false, "none"},
+		{"fairness pass held its planned window", deadline, false, false, false, "answered"},
 		{"fairness pass broken", broken, false, false, false, "miss"},
 		{"cut short by a wake", broken, true, true, false, "none"},
 		{"run cancelled", broken, true, false, true, "none"},

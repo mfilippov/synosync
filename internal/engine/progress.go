@@ -159,19 +159,26 @@ func (e *Engine) PollingSince() time.Time {
 	return time.Time{}
 }
 
-// pollAnswered classifies a finished long poll: true if the server answered, false if it was
-// a miss, and nil if the outcome says nothing about the server - the poll was cut short by a
-// wake, the run was cancelled, or a fairness pass ended at its planned, shortened deadline.
+// pollAnswered classifies a finished long poll: true if it is evidence the event channel works,
+// false if it was a miss, and nil if the outcome says nothing about the server - the poll was
+// cut short by a wake or the run was cancelled.
+//
+// A fairness pass that reaches its planned, shortened deadline counts as evidence, not as
+// nothing: the server accepted the subscribe and held the socket for the whole window without
+// an error, which is all a quiet healthy server ever does inside one. Under continuous local
+// churn polls only ever alternate wake-interrupt / fairness pass, so if the fairness pass were
+// neutral, nothing would ever reset the streak after one real blip, and `status` would report
+// "the last 1 poll(s) failed" on a healthy daemon for as long as the churn lasted.
 func pollAnswered(err error, honorWake, interrupted, cancelled bool) *bool {
-	answered := err == nil
+	ok := err == nil
 	switch {
-	case answered:
+	case ok:
 	case interrupted, cancelled:
 		return nil
 	case !honorWake && errors.Is(err, context.DeadlineExceeded):
-		return nil
+		ok = true
 	}
-	return &answered
+	return &ok
 }
 
 // notePollOutcome folds pollAnswered into the miss streak; nil leaves it unchanged.

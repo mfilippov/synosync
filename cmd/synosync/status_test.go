@@ -413,6 +413,21 @@ func TestStatusNamesOpsWaitingToRetry(t *testing.T) {
 	if strings.Contains(out, "Retrying:") {
 		t.Errorf("below the threshold the stuck line must not appear:\n%s", out)
 	}
+
+	// Paused or without a connection, `sync` cannot start a pass: no hint.
+	for _, r := range []ipc.StatusReport{
+		{Retrying: 1, Paused: true},
+		{Retrying: 1, Connection: ipc.ConnState{Reconnecting: true}},
+	} {
+		buf.Reset()
+		renderStatus(&buf, r)
+		if strings.Contains(buf.String(), "synosync sync") {
+			t.Errorf("hint shown while a pass cannot run:\n%s", buf.String())
+		}
+		if !strings.Contains(buf.String(), "Waiting:   1 operation(s) failed their last attempt and will be retried\n") {
+			t.Errorf("Waiting line missing:\n%s", buf.String())
+		}
+	}
 }
 
 // TestServerTextShowsAHeldPoll pins the Server line while a long poll holds. The last-reply age
