@@ -94,8 +94,10 @@ var errOpReplaced = errors.New("engine: op replaced by a compensating op")
 // escalated as stuck: counted in StuckOps - the `Stuck` line in
 // `status` - and logged with a one-time Warn. Ten failed drains is far past any expected
 // transient (a broken connection re-dials within one drain; an unknown parent resolves as
-// soon as the parent's own op runs), while still surfacing a genuine wedge within about a
-// minute of default 5s scan cycles.
+// soon as the parent's own op runs). It is counted in DRAINS, not time: a busy sync drains
+// every few seconds, but an idle one drains once per long poll, so ten failures can take
+// ~50 min at the default EventPollTimeout. The ops below the threshold are therefore
+// surfaced from their first failure as RetryingOps (the `Waiting` status line).
 const stuckThreshold = 10
 
 // noteOpFailure records one more failed transient apply for a queued op, escalating with
@@ -127,7 +129,19 @@ func (e *Engine) noteOpFailure(qo store.QueuedOp, err error) {
 	e.stuckMu.Lock()
 	defer e.stuckMu.Unlock()
 	e.opFailures[qo.Seq]++
-	e.setOpLastReason(qo.Seq, failureReason(err))
+	reason := failureReason(err)
+	e.setOpLastReason(qo.Seq, reason)
+	if reason == "" && !errors.Is(err, context.Canceled) && !e.opWarned[qo.Seq].unclassified {
+		// Latched per streak rather than "first failure": `status` shows the LAST reason, so an
+		// op whose first failure was classified (or that was first only blocked) and later
+		// fails unclassified must still get its line. A cancelled drain is a shutdown, not a
+		// failure worth a line.
+		if e.logUnclassifiedFailureLocked(qo, err) {
+			latch := e.opWarned[qo.Seq]
+			latch.unclassified = true
+			e.setOpWarnLatch(qo.Seq, latch)
+		}
+	}
 	if e.opFailures[qo.Seq] < stuckThreshold {
 		return
 	}
@@ -136,7 +150,7 @@ func (e *Engine) noteOpFailure(qo store.QueuedOp, err error) {
 		latch.stuck = true
 		attrs := []any{
 			"type", qo.Type, "direction", qo.Direction, "view", qo.ViewID,
-			"path", qo.Path, "seq", qo.Seq, "failures", e.opFailures[qo.Seq],
+			"path", qo.Path, "seq", qo.Seq, "failures", e.opFailures[qo.Seq], "err", err,
 		}
 		// Name the server's own rejection code when the op is being refused by an errno the
 		// action layer does not map: an anonymous stuck counter tells an operator nothing,
@@ -173,6 +187,9 @@ type opWarnLatch struct {
 	stuck   bool
 	blocked bool
 	capped  bool
+	// unclassified: the op's unclassified failure was logged at Info this streak
+	// (logUnclassifiedFailureLocked), so `status`'s "see synosync log" has a line to find.
+	unclassified bool
 }
 
 // setOpWarnLatch stores an op's Warn latch, allocating the map for an Engine built by a test

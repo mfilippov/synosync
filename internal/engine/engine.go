@@ -264,6 +264,11 @@ type Engine struct {
 	// by stuckMu and cleared with the streak in clearOpFailures; in-memory only by design.
 	opLastReason map[uint64]string
 
+	// unclassifiedLogged counts the first-failure Info lines logged in drain pass
+	// unclassifiedPass, capping them per pass (logUnclassifiedFailureLocked). Guarded by stuckMu.
+	unclassifiedLogged int
+	unclassifiedPass   uint64
+
 	// nodeAbsentConfirms tracks, per (view, path), how many drain passes in a row a
 	// path-addressed absence probe answered with the path-error sentinel.
 	// The sentinel (28672) conflates "no such path" with a server-side timeout by the client's
