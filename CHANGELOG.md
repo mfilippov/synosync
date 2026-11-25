@@ -6,6 +6,11 @@ Notable changes to synosync. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- Built with Go 1.27.4 (fixes GO-2026-6859 in the standard library; synosync does not
+  call the affected code) and current dependencies.
+
 ### Fixed
 
 - `status` names an operation that failed and waits for its retry, with the reason,

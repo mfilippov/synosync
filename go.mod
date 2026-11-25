@@ -2,7 +2,7 @@ module github.com/mfilippov/synosync
 
 go 1.27
 
-toolchain go1.27.2
+toolchain go1.27.4
 
 require (
 	github.com/Microsoft/go-winio v0.6.4
@@ -16,5 +16,5 @@ require (
 
 require (
 	github.com/danieljoos/wincred v1.2.3 // indirect
-	github.com/godbus/dbus/v5 v5.2.2 // indirect
+	github.com/godbus/dbus/v5 v5.2.4 // indirect
 )
