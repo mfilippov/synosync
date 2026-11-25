@@ -400,7 +400,7 @@ func TestStatusNamesOpsWaitingToRetry(t *testing.T) {
 	})
 	out := buf.String()
 	for _, want := range []string{
-		"Waiting:   2 operation(s) failed and will be retried (run synosync sync to retry now)",
+		"Waiting:   2 operation(s) failed; retried on the next sync pass (synosync sync starts one now)",
 		"VPN/a.conf",
 		"moving to: VPN/b.conf",
 		"reason:    the connection to the server was lost",
@@ -417,8 +417,9 @@ func TestStatusNamesOpsWaitingToRetry(t *testing.T) {
 
 // TestServerTextShowsAHeldPoll pins the Server line while a long poll holds. The last-reply age
 // grows on a live connection for as long as the poll holds, so the poll is shown instead; the
-// age comes back beside it only when the last reply predates the poll, which is how a server
-// that stopped answering looks (issue #6).
+// age comes back, with the count, only when polls in a row went unanswered: that is how a server
+// that accepts connections but never answers looks, whatever a slow scan or a re-dial did to the age
+// (issue #6).
 func TestServerTextShowsAHeldPoll(t *testing.T) {
 	now := time.Date(2026, 11, 25, 14, 51, 0, 0, time.UTC)
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
@@ -430,9 +431,22 @@ func TestServerTextShowsAHeldPoll(t *testing.T) {
 		{"idle healthy poll",
 			ipc.StatusReport{LastContact: ago(3*time.Minute + 20*time.Second), PollingSince: ago(3 * time.Minute)},
 			"connected, waiting for server changes for 3 min"},
-		{"poll long after the last reply",
+		{"held poll after a long local scan is still healthy",
 			ipc.StatusReport{LastContact: ago(12 * time.Minute), PollingSince: ago(4 * time.Minute)},
-			"connected, waiting for server changes for 4 min, last reply 12m ago"},
+			"connected, waiting for server changes for 4 min"},
+		{"server that stopped answering polls",
+			ipc.StatusReport{LastContact: ago(30 * time.Second), PollingSince: ago(20 * time.Second), PollMisses: 3},
+			"connected, waiting for server changes for 20 s, no answer to the last 3 poll(s), last reply 30s ago"},
+		{"misses before any reply",
+			ipc.StatusReport{PollingSince: ago(time.Minute), PollMisses: 1},
+			"connected, waiting for server changes for 1 min, no answer to the last 1 poll(s)"},
+		{"connecting ignores a stale poll",
+			ipc.StatusReport{Connection: ipc.ConnState{Connecting: true}, PollingSince: ago(time.Minute)},
+			"connecting..."},
+		{"paused ignores a stale poll",
+			ipc.StatusReport{Connection: ipc.ConnState{Paused: true}, PollingSince: ago(time.Minute),
+				LastContact: ago(2 * time.Minute)},
+			"paused, last reply 2m ago"},
 		{"poll before any reply",
 			ipc.StatusReport{PollingSince: ago(30 * time.Second)},
 			"connected, waiting for server changes for 30 s"},

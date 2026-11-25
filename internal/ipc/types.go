@@ -67,6 +67,10 @@ type StatusReport struct {
 	// reply is the only regular exchange of an idle sync, so while it holds LastContact ages
 	// on a live connection. Additive to the JSON contract.
 	PollingSince time.Time `json:"polling_since,omitzero"`
+	// PollMisses is how many long polls in a row ended without the server's answer (a timed-out
+	// or broken poll). It is what tells a server that accepts connections but never answers
+	// apart from a held poll. Additive to the JSON contract.
+	PollMisses int `json:"poll_misses,omitempty"`
 	// AppliedOps, TransferredBytes and MovingFor report what the RUNNING daemon has
 	// actually moved: operations applied cleanly, bytes of content transferred in either
 	// direction, and how long it has been moving them (the window starts at the first

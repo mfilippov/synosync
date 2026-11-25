@@ -578,6 +578,7 @@ func (e *Engine) pollOnce(ctx context.Context) error {
 		// last-contact line to hours on a perfectly healthy client.
 		e.progress.noteServerContact()
 	}
+	e.progress.notePollOutcome(pollAnswered(err, honorWake, interrupted.Load() || wakeClosed.Load(), ctx.Err() != nil))
 	if wakeClosed.Load() {
 		// Clear the seam so subsequent polls fall back to the periodic scan. Safe
 		// to mutate e.wake here: stop+wg.Wait fenced the goroutine before this

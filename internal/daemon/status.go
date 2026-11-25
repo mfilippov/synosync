@@ -243,6 +243,7 @@ func (d *Daemon) buildStatus(ctx context.Context) (ipc.StatusReport, error) {
 	retrying := 0
 	var retryingOps []ipc.StuckEntry
 	var pollingSince time.Time
+	pollMisses := 0
 	var appliedOps, transferred int64
 	var movingFor time.Duration
 	var lastContact time.Time
@@ -268,6 +269,7 @@ func (d *Daemon) buildStatus(ctx context.Context) (ipc.StatusReport, error) {
 			retrying = re.RetryingOps()
 			retryingOps = d.retryingEntries(re, vs)
 			pollingSince = re.PollingSince()
+			pollMisses = re.PollMisses()
 		}
 	}
 
@@ -282,6 +284,7 @@ func (d *Daemon) buildStatus(ctx context.Context) (ipc.StatusReport, error) {
 		Retrying:         retrying,
 		RetryingOps:      retryingOps,
 		PollingSince:     pollingSince,
+		PollMisses:       pollMisses,
 		AppliedOps:       appliedOps,
 		TransferredBytes: transferred,
 		MovingFor:        movingFor,
@@ -1079,6 +1082,7 @@ type retryEngine interface {
 	RetryingOps() int
 	RetryingDetails(limit int) ([]engine.StuckOp, error)
 	PollingSince() time.Time
+	PollMisses() int
 }
 
 // toStuckEntries resolves the view names of the engine's failing-op listing for display.

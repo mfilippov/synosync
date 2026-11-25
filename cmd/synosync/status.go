@@ -183,8 +183,9 @@ func renderStatusOpts(w io.Writer, r ipc.StatusReport, verbose bool) {
 	}
 	if r.Retrying > 0 {
 		// Below the stuck threshold a failed op waits for the next drain, which runs after
-		// the current long poll returns - minutes on an idle sync. Say so, and how to skip it.
-		line("Waiting", "%d operation(s) failed and will be retried (run synosync sync to retry now)", r.Retrying)
+		// the current long poll returns - minutes on an idle sync. Say so, and how to start
+		// that pass sooner; not "retry now", since a paced or blocked op still waits its turn.
+		line("Waiting", "%d operation(s) failed; retried on the next sync pass (synosync sync starts one now)", r.Retrying)
 		listFailing(r.Retrying, r.RetryingOps)
 	}
 	if r.DiskFull {
@@ -250,25 +251,23 @@ func headline(r ipc.StatusReport, host string) string {
 	}
 }
 
-// pollQuietGap is how much older than the poll in flight the last reply may be before the
-// Server line names it. A healthy cycle stamps contact on every turn and then polls, so the gap
-// is only the local scan between them; a larger one means the poll is not the whole story.
-const pollQuietGap = 2 * time.Minute
-
 // serverText words the Server line: the connection state, and the evidence the server is
 // answering. While a long poll holds, the last-reply age grows on a live connection, so the
-// held poll is shown instead - with the age beside it only when the last reply predates the
-// poll by more than the scan between them, which is what a server that stopped answering
-// looks like (its polls time out and are re-issued, so one is nearly always in flight).
+// held poll is shown instead (issue #6). A server that accepts connections but never answers
+// also always has a poll in flight - each one times out and is re-issued - so the daemon's
+// count of polls in a row that went unanswered decides: with any, the line says so and keeps
+// the age. Neither a slow local scan before the poll nor the contact a re-dial stamps can
+// hide that count, which is why it, and not the gap between the two times, is the signal.
 func serverText(r ipc.StatusReport, now time.Time) string {
 	s := connText(r.Connection)
 	polling := !r.PollingSince.IsZero() && !r.Connection.Connecting && !r.Connection.Reconnecting &&
 		!r.Connection.Paused
 	if polling {
 		s += ", waiting for server changes for " + humanDuration(now.Sub(r.PollingSince))
-		if r.LastContact.IsZero() || r.PollingSince.Sub(r.LastContact) <= pollQuietGap {
+		if r.PollMisses == 0 {
 			return s
 		}
+		s += fmt.Sprintf(", no answer to the last %d poll(s)", r.PollMisses)
 	}
 	// Only once the server has actually answered: before that there is nothing to age, and
 	// "never" on a daemon three seconds into its bring-up would read as a fault.

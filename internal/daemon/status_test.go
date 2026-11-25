@@ -177,6 +177,7 @@ type retryFakeEngine struct {
 	retryingOps  []engine.StuckOp
 	retryingErr  error
 	pollingSince time.Time
+	pollMisses   int
 }
 
 func (e *retryFakeEngine) RetryingOps() int { return e.retrying }
@@ -184,6 +185,7 @@ func (e *retryFakeEngine) RetryingDetails(int) ([]engine.StuckOp, error) {
 	return e.retryingOps, e.retryingErr
 }
 func (e *retryFakeEngine) PollingSince() time.Time { return e.pollingSince }
+func (e *retryFakeEngine) PollMisses() int         { return e.pollMisses }
 
 // TestBuildStatusSurfacesRetryingOpsAndThePoll pins the plumbing for issue #6: an op that failed
 // below the stuck threshold, with its reason and view name, and the poll in flight reach the
@@ -207,6 +209,7 @@ func TestBuildStatusSurfacesRetryingOpsAndThePoll(t *testing.T) {
 		retryingOps: []engine.StuckOp{{ViewID: 1, Type: "rename", Direction: "outbound",
 			Path: "a.conf", NewPath: "b.conf", Failures: 2, Reason: "the connection to the server was lost"}},
 		pollingSince: since,
+		pollMisses:   2,
 	}
 	d.setEngine(eng)
 	rep, err = d.buildStatus(context.Background())
@@ -219,6 +222,9 @@ func TestBuildStatusSurfacesRetryingOpsAndThePoll(t *testing.T) {
 	if got := rep.RetryingOps[0]; got.Op != "rename" || got.NewPath != "b.conf" || got.Failures != 2 ||
 		got.Reason != "the connection to the server was lost" {
 		t.Errorf("RetryingOps[0] = %+v", got)
+	}
+	if rep.PollMisses != 2 {
+		t.Errorf("PollMisses = %d, want 2", rep.PollMisses)
 	}
 	if !rep.PollingSince.Equal(since) {
 		t.Errorf("PollingSince = %v, want %v", rep.PollingSince, since)

@@ -4,13 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"net"
+	"os"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/mfilippov/synosync/internal/actions"
 	"github.com/mfilippov/synosync/internal/store"
+	"github.com/mfilippov/synosync/internal/transport"
 )
 
 // TestFailureReasonClassifiesWhatAnOperatorActsOn pins the coarse classes `status` names for a
@@ -36,6 +40,18 @@ func TestFailureReasonClassifiesWhatAnOperatorActsOn(t *testing.T) {
 		{"busy", actions.ErrNodeBusy, "the server is still settling this item"},
 		{"parent", errParentUnknown, "its parent folder is not on the server yet"},
 		{"unexpected", actions.ErrUnexpectedReply, "the server sent an unexpected reply"},
+		{"eof", fmt.Errorf("read reply: %w", io.ErrUnexpectedEOF), "the connection to the server was lost"},
+		{"closed", fmt.Errorf("x: %w", net.ErrClosed), "the connection to the server was lost"},
+		// syscall.Errno and the deadline sentinels satisfy net.Error: none of these may be
+		// reported as a lost connection (the first review of #7 caught exactly that).
+		{"local open", fmt.Errorf("apply: %w", &fs.PathError{Op: "open", Path: "x", Err: syscall.EACCES}),
+			"a local file or folder could not be read or written"},
+		{"local rename", &os.LinkError{Op: "rename", Old: "a", New: "b", Err: syscall.ENOENT},
+			"a local file or folder could not be read or written"},
+		{"bare errno", fmt.Errorf("x: %w", syscall.EACCES), ""},
+		{"ctx deadline", fmt.Errorf("x: %w", context.DeadlineExceeded), "the operation timed out"},
+		{"os deadline", fmt.Errorf("x: %w", os.ErrDeadlineExceeded), "the operation timed out"},
+		{"cancelled", fmt.Errorf("x: %w", context.Canceled), ""},
 		{"unknown", errors.New("something else"), ""},
 	}
 	for _, tc := range cases {
@@ -167,20 +183,20 @@ func TestPollingSinceBracketsTheLongPoll(t *testing.T) {
 	}
 }
 
-// replaceCountTransport counts ReplaceEvent calls and can fail them.
-type replaceCountTransport struct {
+// replaceErrTransport scripts ReplaceEvent's result.
+type replaceErrTransport struct {
 	fakeTransport
 	replaceErr error
 }
 
-func (t *replaceCountTransport) ReplaceEvent(context.Context) error { return t.replaceErr }
+func (t *replaceErrTransport) ReplaceEvent(context.Context) error { return t.replaceErr }
 
 // TestReplaceEventConnStampsContactOnlyOnSuccess pins that a completed re-dial counts as the
 // server answering: after an outage the age otherwise kept counting from before it for as long
 // as the first poll on the new connection held (issue #6).
 func TestReplaceEventConnStampsContactOnlyOnSuccess(t *testing.T) {
 	st := newTestStore(t)
-	tr := &replaceCountTransport{fakeTransport: fakeTransport{client: &fakeClient{}}, replaceErr: errors.New("dial failed")}
+	tr := &replaceErrTransport{fakeTransport: fakeTransport{client: &fakeClient{}}, replaceErr: errors.New("dial failed")}
 	e := New(st, tr, t.TempDir(), "sess", discardLogger())
 	dead := &fakeClient{broken: true}
 
@@ -200,11 +216,143 @@ func TestReplaceEventConnStampsContactOnlyOnSuccess(t *testing.T) {
 	}
 
 	// A healthy connection is not re-dialed, so nothing is stamped on its behalf.
-	e2 := New(st, &replaceCountTransport{fakeTransport: fakeTransport{client: &fakeClient{}}}, t.TempDir(), "sess", discardLogger())
+	e2 := New(st, &replaceErrTransport{fakeTransport: fakeTransport{client: &fakeClient{}}}, t.TempDir(), "sess", discardLogger())
 	if err := e2.replaceEventConn(context.Background(), &fakeClient{}); err != nil {
 		t.Fatalf("replaceEventConn (healthy): %v", err)
 	}
 	if !e2.LastContact().IsZero() {
 		t.Error("a no-op replace on a healthy connection stamped the contact time")
+	}
+
+	// A terminal re-dial failure (a closed pool) is returned and stamps nothing.
+	e3 := New(st, &replaceErrTransport{fakeTransport: fakeTransport{client: &fakeClient{}}, replaceErr: transport.ErrPoolClosed},
+		t.TempDir(), "sess", discardLogger())
+	if err := e3.replaceEventConn(context.Background(), dead); !errors.Is(err, transport.ErrPoolClosed) {
+		t.Fatalf("replaceEventConn (closed pool) = %v, want ErrPoolClosed", err)
+	}
+	if !e3.LastContact().IsZero() {
+		t.Error("a terminal re-dial failure stamped the contact time")
+	}
+}
+
+// TestFailingDetailsReasonPrecedenceAndBounds pins which reason wins and where the bands meet:
+// a server code streak beats a classified transient, a LATER block beats a stale code, and an
+// op at stuckThreshold-1 is Retrying while one at stuckThreshold is Stuck.
+func TestFailingDetailsReasonPrecedenceAndBounds(t *testing.T) {
+	st := newTestStore(t)
+	e := New(st, &fakeTransport{client: &fakeClient{}}, t.TempDir(), "sess", discardLogger())
+	enqueue := func(path string) uint64 {
+		t.Helper()
+		seq, err := st.Enqueue(store.Op{Type: store.OpUpload, Direction: store.DirOutbound, ViewID: 1, Path: path})
+		if err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+		return seq
+	}
+	coded, blocked, edge, over := enqueue("coded"), enqueue("blocked"), enqueue("edge"), enqueue("over")
+	codeReason := serverErrStreakReason(actions.CodeNameCaseCollision)
+
+	e.stuckMu.Lock()
+	e.opFailures[coded] = 3
+	e.opServerErrs[coded] = serverErrStreak{code: actions.CodeNameCaseCollision}
+	e.setOpLastReason(coded, "the connection to the server was lost")
+	e.opFailures[blocked] = 4
+	e.opServerErrs[blocked] = serverErrStreak{code: actions.CodeNameCaseCollision}
+	e.setOpLastReason(blocked, reasonBlocked)
+	e.opFailures[edge] = stuckThreshold - 1
+	e.opFailures[over] = stuckThreshold
+	e.stuckMu.Unlock()
+
+	retrying, err := e.RetryingDetails(0)
+	if err != nil {
+		t.Fatalf("RetryingDetails: %v", err)
+	}
+	byPath := map[string]StuckOp{}
+	for _, s := range retrying {
+		byPath[s.Path] = s
+	}
+	if len(retrying) != 3 {
+		t.Fatalf("RetryingDetails = %+v, want coded, blocked and edge", retrying)
+	}
+	if _, ok := byPath["over"]; ok {
+		t.Error("an op AT stuckThreshold was listed as Retrying")
+	}
+	if got := byPath["coded"].Reason; got != codeReason {
+		t.Errorf("coded reason = %q, want the server code %q", got, codeReason)
+	}
+	if got := byPath["blocked"].Reason; got != reasonBlocked {
+		t.Errorf("blocked reason = %q, want %q over the stale code", got, reasonBlocked)
+	}
+	stuck, err := e.StuckDetails(0)
+	if err != nil || len(stuck) != 1 || stuck[0].Path != "over" {
+		t.Errorf("StuckDetails = %+v (err %v), want only the op at stuckThreshold", stuck, err)
+	}
+}
+
+// TestPollAnsweredClassifiesPollOutcomes pins which poll endings count against the server.
+func TestPollAnsweredClassifiesPollOutcomes(t *testing.T) {
+	deadline := fmt.Errorf("poll: %w", context.DeadlineExceeded)
+	broken := fmt.Errorf("poll: %w", actions.ErrConnBroken)
+	cases := []struct {
+		name                            string
+		err                             error
+		honorWake, interrupted, cancels bool
+		want                            string // "answered", "miss" or "none"
+	}{
+		{"answered", nil, true, false, false, "answered"},
+		{"answered alongside a wake", nil, true, true, false, "answered"},
+		{"full poll timed out", deadline, true, false, false, "miss"},
+		{"broken read", broken, true, false, false, "miss"},
+		{"fairness pass reached its planned end", deadline, false, false, false, "none"},
+		{"fairness pass broken", broken, false, false, false, "miss"},
+		{"cut short by a wake", broken, true, true, false, "none"},
+		{"run cancelled", broken, true, false, true, "none"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := "none"
+			if a := pollAnswered(tc.err, tc.honorWake, tc.interrupted, tc.cancels); a != nil {
+				got = map[bool]string{true: "answered", false: "miss"}[*a]
+			}
+			if got != tc.want {
+				t.Errorf("pollAnswered = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPollMissesCountsUnansweredPollsThroughPollOnce drives the streak through the real poll:
+// a server that keeps failing the poll raises it, one answer resets it.
+func TestPollMissesCountsUnansweredPollsThroughPollOnce(t *testing.T) {
+	st := newTestStore(t)
+	if err := st.PutView(7, store.View{Name: "home", Privilege: "rw", NodeID: "root7", InitialSyncDone: true}); err != nil {
+		t.Fatalf("PutView: %v", err)
+	}
+	fail := true
+	lc := &loopClient{
+		views: []actions.View{{ViewID: 7, Name: "home", Privilege: "rw", NodeID: "root7"}},
+		pollFn: func(int) ([]int64, error) {
+			if fail {
+				return nil, fmt.Errorf("poll: %w", actions.ErrConnBroken)
+			}
+			return nil, nil
+		},
+	}
+	e := New(st, &concTransport{client: lc}, t.TempDir(), "sess", discardLogger())
+
+	for i := range 2 {
+		if err := e.pollOnce(context.Background()); err == nil {
+			t.Fatalf("poll %d succeeded, want the injected failure", i+1)
+		}
+	}
+	if got := e.PollMisses(); got != 2 {
+		t.Fatalf("PollMisses after two failed polls = %d, want 2", got)
+	}
+	fail = false
+	if err := e.pollOnce(context.Background()); err != nil {
+		t.Fatalf("pollOnce: %v", err)
+	}
+	if got := e.PollMisses(); got != 0 {
+		t.Errorf("PollMisses after an answered poll = %d, want 0", got)
 	}
 }

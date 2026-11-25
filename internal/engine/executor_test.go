@@ -464,7 +464,7 @@ func TestDrainQueueStuckCounterEscalatesAndClears(t *testing.T) {
 	dl := &dlClient{
 		content: map[string][]byte{"f1": []byte("hello")},
 		nodes:   map[string]actions.Node{"f1": {Hash: "h1", MTime: 1700000000, Size: 5}},
-		dlErr:   errors.New("download boom"),
+		dlErr:   fmt.Errorf("download boom: %w", actions.ErrConnBroken),
 	}
 	var logbuf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&logbuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
@@ -491,6 +491,16 @@ func TestDrainQueueStuckCounterEscalatesAndClears(t *testing.T) {
 	if got := e.StuckOps(); got != 0 {
 		t.Fatalf("StuckOps after %d failures = %d, want 0 (below threshold)", stuckThreshold-1, got)
 	}
+	// ...but it is reported as Retrying, with its reason, from the real drain path (issue #6):
+	// a failure site that skipped the bookkeeping would leave the band empty here.
+	if got := e.RetryingOps(); got != 1 {
+		t.Fatalf("RetryingOps after %d failures = %d, want 1", stuckThreshold-1, got)
+	}
+	if det, err := e.RetryingDetails(0); err != nil || len(det) != 1 ||
+		det[0].Failures != stuckThreshold-1 || det[0].Reason != "the connection to the server was lost" {
+		t.Fatalf("RetryingDetails = %+v (err %v), want a.txt with %d failures and the dropped connection",
+			det, err, stuckThreshold-1)
+	}
 	if strings.Contains(logbuf.String(), stuckMsg) {
 		t.Fatalf("stuck Warn fired below threshold:\n%s", logbuf.String())
 	}
@@ -502,6 +512,9 @@ func TestDrainQueueStuckCounterEscalatesAndClears(t *testing.T) {
 	}
 	if got := e.StuckOps(); got != 1 {
 		t.Fatalf("StuckOps at threshold = %d, want 1", got)
+	}
+	if got := e.RetryingOps(); got != 0 {
+		t.Fatalf("RetryingOps at threshold = %d, want 0 (the op moved to the stuck band)", got)
 	}
 	for i := 0; i < 3; i++ {
 		if err := e.drainQueue(context.Background()); err == nil {
@@ -527,6 +540,9 @@ func TestDrainQueueStuckCounterEscalatesAndClears(t *testing.T) {
 	}
 	if got := e.StuckOps(); got != 0 {
 		t.Fatalf("StuckOps after successful apply = %d, want 0", got)
+	}
+	if got := e.RetryingOps(); got != 0 {
+		t.Fatalf("RetryingOps after successful apply = %d, want 0", got)
 	}
 }
 

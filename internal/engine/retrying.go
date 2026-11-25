@@ -1,8 +1,12 @@
 package engine
 
 import (
+	"context"
 	"errors"
+	"io"
+	"io/fs"
 	"net"
+	"os"
 
 	"github.com/mfilippov/synosync/internal/actions"
 )
@@ -24,9 +28,18 @@ const reasonBlocked = "waiting behind another operation on the same path that is
 // the full error chain is in the log, and the point here is the one fact an operator acts on -
 // is the network the problem, the server, or this item. An unrecognised error yields "", which
 // the CLI renders as a pointer to the log.
+//
+// The network class is matched on CONCRETE network types only, never on the net.Error
+// interface: syscall.Errno and the context/os deadline sentinels all satisfy net.Error, so that
+// match named a local EACCES or a Windows sharing violation "the connection to the server was
+// lost" - sending the operator to the network for a file problem. A local *fs.PathError or
+// *os.LinkError is therefore classified first; net.OpError carries no PathError, so a socket error cannot land
+// there.
 func failureReason(err error) string {
 	var dnsErr *net.DNSError
-	var netErr net.Error
+	var opErr *net.OpError
+	var pathErr *fs.PathError
+	var linkErr *os.LinkError // a rename's error, which carries no PathError
 	switch {
 	case err == nil:
 		return ""
@@ -40,12 +53,17 @@ func failureReason(err error) string {
 		return "the server is still settling this item"
 	case errors.Is(err, errParentUnknown):
 		return "its parent folder is not on the server yet"
+	case errors.As(err, &pathErr), errors.As(err, &linkErr):
+		return "a local file or folder could not be read or written"
 	case errors.As(err, &dnsErr):
 		return "the server's name could not be resolved"
-	case errors.Is(err, actions.ErrConnBroken), errors.As(err, &netErr):
+	case errors.Is(err, actions.ErrConnBroken), errors.As(err, &opErr),
+		errors.Is(err, net.ErrClosed), errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.EOF):
 		return "the connection to the server was lost"
 	case errors.Is(err, actions.ErrUnexpectedReply):
 		return "the server sent an unexpected reply"
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, os.ErrDeadlineExceeded):
+		return "the operation timed out"
 	default:
 		return ""
 	}

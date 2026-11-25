@@ -1783,10 +1783,13 @@ func (e *Engine) failingDetails(lo, hi, limit int) ([]StuckOp, error) {
 		}
 		// The server's own rejection code is the more specific fact; the last failure's
 		// classification is the fallback, so a transient (a dropped connection) is named too.
-		if f.hasCode {
-			s.Reason = serverErrStreakReason(f.code)
-		} else {
+		// Except when the op's latest drain only BLOCKED it: a code streak from its own earlier
+		// applies is stale then, and the operator must look at the op it waits behind.
+		switch {
+		case f.reason == reasonBlocked || !f.hasCode:
 			s.Reason = f.reason
+		default:
+			s.Reason = serverErrStreakReason(f.code)
 		}
 		out = append(out, s)
 		return nil

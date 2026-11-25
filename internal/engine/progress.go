@@ -11,6 +11,8 @@ package engine
 // it says nothing about itself.
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,6 +41,13 @@ type progress struct {
 	// stamp, so without this `status` could only show a last-reply age that grows for
 	// minutes on a perfectly live connection (issue #6).
 	pollSinceUnixNano atomic.Int64
+	// pollMisses counts consecutive long polls that ended without the server's answer: a
+	// client-side deadline on a full-length poll, or a broken read. A wake that cut the poll
+	// short, a fairness pass reaching its planned end, and a cancelled run are not misses, and
+	// an answered poll resets it. It, not the last-reply age, is what tells a server that
+	// accepts connections but never answers apart from a held poll: a completed re-dial
+	// stamps contact, so the age alone no longer grows behind a silent server (issue #6).
+	pollMisses atomic.Int64
 	// startedUnixNano fixes the window the rate is computed over. It is set on the first
 	// applied op rather than at construction, so time spent connecting, walking or planning
 	// does not dilute the transfer rate into meaninglessness.
@@ -142,13 +151,42 @@ func (p *progress) endPoll()   { p.pollSinceUnixNano.Store(0) }
 
 // PollingSince reports when the long poll now in flight was issued, or the zero time when no
 // poll is in flight. The poll is bounded by its own deadline, so a connection that never
-// answers still shows up: the poll is re-issued and the last-reply age keeps growing behind it.
+// answers still shows up - as PollMisses, since each timed-out poll is re-issued.
 func (e *Engine) PollingSince() time.Time {
 	if ns := e.progress.pollSinceUnixNano.Load(); ns > 0 {
 		return time.Unix(0, ns)
 	}
 	return time.Time{}
 }
+
+// pollAnswered classifies a finished long poll: true if the server answered, false if it was
+// a miss, and nil if the outcome says nothing about the server - the poll was cut short by a
+// wake, the run was cancelled, or a fairness pass ended at its planned, shortened deadline.
+func pollAnswered(err error, honorWake, interrupted, cancelled bool) *bool {
+	answered := err == nil
+	switch {
+	case answered:
+	case interrupted, cancelled:
+		return nil
+	case !honorWake && errors.Is(err, context.DeadlineExceeded):
+		return nil
+	}
+	return &answered
+}
+
+// notePollOutcome folds pollAnswered into the miss streak; nil leaves it unchanged.
+func (p *progress) notePollOutcome(answered *bool) {
+	switch {
+	case answered == nil:
+	case *answered:
+		p.pollMisses.Store(0)
+	default:
+		p.pollMisses.Add(1)
+	}
+}
+
+// PollMisses reports how many long polls in a row ended without the server's answer.
+func (e *Engine) PollMisses() int { return int(e.progress.pollMisses.Load()) }
 
 // startListing marks a cold-start walk of viewID as begun, with its counters at zero.
 func (p *progress) startListing(viewID uint64) {
