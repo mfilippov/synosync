@@ -185,7 +185,7 @@ func renderStatusOpts(w io.Writer, r ipc.StatusReport, verbose bool) {
 		// Below the stuck threshold a failed op waits for the next drain, which runs after
 		// the current long poll returns - minutes on an idle sync. Say so, and how to start
 		// that pass sooner; not "retry now", since a paced or blocked op still waits its turn.
-		line("Waiting", "%d operation(s) failed; retried on the next sync pass (synosync sync starts one now)", r.Retrying)
+		line("Waiting", "%d operation(s) failed their last attempt and will be retried (synosync sync starts the next pass now)", r.Retrying)
 		listFailing(r.Retrying, r.RetryingOps)
 	}
 	if r.DiskFull {
@@ -255,19 +255,27 @@ func headline(r ipc.StatusReport, host string) string {
 // answering. While a long poll holds, the last-reply age grows on a live connection, so the
 // held poll is shown instead (issue #6). A server that accepts connections but never answers
 // also always has a poll in flight - each one times out and is re-issued - so the daemon's
-// count of polls in a row that went unanswered decides: with any, the line says so and keeps
+// count of polls in a row that failed decides: with any, the line says so and keeps
 // the age. Neither a slow local scan before the poll nor the contact a re-dial stamps can
 // hide that count, which is why it, and not the gap between the two times, is the signal.
+//
+// The failed-poll count is shown whether or not a poll is in flight: a server that accepts the
+// connection but resets every poll at once spends almost no time polling - it fails, the event
+// connection re-dials (stamping contact) and the loop waits before polling again - so a count
+// gated on the poll in flight left it reading "last reply just now".
 func serverText(r ipc.StatusReport, now time.Time) string {
 	s := connText(r.Connection)
-	polling := !r.PollingSince.IsZero() && !r.Connection.Connecting && !r.Connection.Reconnecting &&
-		!r.Connection.Paused
+	up := !r.Connection.Connecting && !r.Connection.Reconnecting && !r.Connection.Paused
+	polling := up && !r.PollingSince.IsZero()
+	failing := up && r.PollMisses > 0
 	if polling {
-		s += ", waiting for server changes for " + humanDuration(now.Sub(r.PollingSince))
-		if r.PollMisses == 0 {
-			return s
-		}
-		s += fmt.Sprintf(", no answer to the last %d poll(s)", r.PollMisses)
+		s += ", waiting for server changes for " + shortDuration(now.Sub(r.PollingSince))
+	}
+	if failing {
+		s += fmt.Sprintf(", the last %d poll(s) failed", r.PollMisses)
+	}
+	if polling && !failing {
+		return s
 	}
 	// Only once the server has actually answered: before that there is nothing to age, and
 	// "never" on a daemon three seconds into its bring-up would read as a fault.
@@ -275,6 +283,19 @@ func serverText(r ipc.StatusReport, now time.Time) string {
 		s += ", last reply " + humanAge(now.Sub(r.LastContact))
 	}
 	return s
+}
+
+// shortDuration renders a span in the same compact units as humanAge, so one line does not
+// mix "20 s" with "30s ago".
+func shortDuration(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+	}
 }
 
 // connText words the connection state.

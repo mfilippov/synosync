@@ -185,7 +185,8 @@ func (p *progress) notePollOutcome(answered *bool) {
 	}
 }
 
-// PollMisses reports how many long polls in a row ended without the server's answer.
+// PollMisses reports how many long polls in a row failed: timed out, broken, or rejected by the
+// server - any of which, repeated, is what an operator needs to see.
 func (e *Engine) PollMisses() int { return int(e.progress.pollMisses.Load()) }
 
 // startListing marks a cold-start walk of viewID as begun, with its counters at zero.

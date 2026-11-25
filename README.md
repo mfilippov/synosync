@@ -254,7 +254,9 @@ the directory is left in place and the divergence is also listed under the per-v
 unresolved count. `status` also has a
 `Stuck` count of queued ops that have
 failed many consecutive apply attempts (still retrying, not dropped - a
-visibility net for permission errors and the like), and a `Disk: full` flag
+visibility net for permission errors and the like), a `Waiting` list of ops that
+failed fewer attempts (each with its path and reason; the next pass retries them), and a
+`Disk: full` flag
 latched when an apply fails because the volume is out of space or the user's quota
 is exhausted - classified per-OS, so it is reported on Windows as well as Unix (the
 op stays queued and retries; the flag clears on the next successful apply). When no daemon is running it prints a hint to start one and

@@ -400,7 +400,7 @@ func TestStatusNamesOpsWaitingToRetry(t *testing.T) {
 	})
 	out := buf.String()
 	for _, want := range []string{
-		"Waiting:   2 operation(s) failed; retried on the next sync pass (synosync sync starts one now)",
+		"Waiting:   2 operation(s) failed their last attempt and will be retried (synosync sync starts the next pass now)",
 		"VPN/a.conf",
 		"moving to: VPN/b.conf",
 		"reason:    the connection to the server was lost",
@@ -430,16 +430,16 @@ func TestServerTextShowsAHeldPoll(t *testing.T) {
 	}{
 		{"idle healthy poll",
 			ipc.StatusReport{LastContact: ago(3*time.Minute + 20*time.Second), PollingSince: ago(3 * time.Minute)},
-			"connected, waiting for server changes for 3 min"},
+			"connected, waiting for server changes for 3m"},
 		{"held poll after a long local scan is still healthy",
 			ipc.StatusReport{LastContact: ago(12 * time.Minute), PollingSince: ago(4 * time.Minute)},
-			"connected, waiting for server changes for 4 min"},
+			"connected, waiting for server changes for 4m"},
 		{"server that stopped answering polls",
 			ipc.StatusReport{LastContact: ago(30 * time.Second), PollingSince: ago(20 * time.Second), PollMisses: 3},
-			"connected, waiting for server changes for 20 s, no answer to the last 3 poll(s), last reply 30s ago"},
+			"connected, waiting for server changes for 20s, the last 3 poll(s) failed, last reply 30s ago"},
 		{"misses before any reply",
 			ipc.StatusReport{PollingSince: ago(time.Minute), PollMisses: 1},
-			"connected, waiting for server changes for 1 min, no answer to the last 1 poll(s)"},
+			"connected, waiting for server changes for 1m, the last 1 poll(s) failed"},
 		{"connecting ignores a stale poll",
 			ipc.StatusReport{Connection: ipc.ConnState{Connecting: true}, PollingSince: ago(time.Minute)},
 			"connecting..."},
@@ -449,7 +449,15 @@ func TestServerTextShowsAHeldPoll(t *testing.T) {
 			"paused, last reply 2m ago"},
 		{"poll before any reply",
 			ipc.StatusReport{PollingSince: ago(30 * time.Second)},
-			"connected, waiting for server changes for 30 s"},
+			"connected, waiting for server changes for 30s"},
+		// A server that resets every poll at once: no poll is in flight between attempts, and
+		// each re-dial stamps contact - the failed-poll count is the only honest signal left.
+		{"polls failing fast with no poll in flight",
+			ipc.StatusReport{LastContact: ago(time.Second), PollMisses: 40},
+			"connected, the last 40 poll(s) failed, last reply just now"},
+		{"reconnecting hides the poll count",
+			ipc.StatusReport{Connection: ipc.ConnState{Reconnecting: true}, PollMisses: 4},
+			"reconnecting..."},
 		{"between polls",
 			ipc.StatusReport{LastContact: ago(90 * time.Second)},
 			"connected, last reply 1m ago"},

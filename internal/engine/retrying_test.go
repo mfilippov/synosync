@@ -40,7 +40,8 @@ func TestFailureReasonClassifiesWhatAnOperatorActsOn(t *testing.T) {
 		{"busy", actions.ErrNodeBusy, "the server is still settling this item"},
 		{"parent", errParentUnknown, "its parent folder is not on the server yet"},
 		{"unexpected", actions.ErrUnexpectedReply, "the server sent an unexpected reply"},
-		{"eof", fmt.Errorf("read reply: %w", io.ErrUnexpectedEOF), "the connection to the server was lost"},
+		// A bare EOF is also how a large upload whose local file shrank mid-stream ends.
+		{"bare eof", fmt.Errorf("actions: resume_upload body: %w", io.EOF), ""},
 		{"closed", fmt.Errorf("x: %w", net.ErrClosed), "the connection to the server was lost"},
 		// syscall.Errno and the deadline sentinels satisfy net.Error: none of these may be
 		// reported as a lost connection (the first review of #7 caught exactly that).
@@ -354,5 +355,44 @@ func TestPollMissesCountsUnansweredPollsThroughPollOnce(t *testing.T) {
 	}
 	if got := e.PollMisses(); got != 0 {
 		t.Errorf("PollMisses after an answered poll = %d, want 0", got)
+	}
+}
+
+// brokenPollClient breaks every long poll and then reports the socket broken, as a server that
+// resets the poll does - so pollOnce re-dials the event connection after each failure.
+type brokenPollClient struct {
+	*loopClient
+}
+
+func (c *brokenPollClient) LongPoll(context.Context, []actions.Subscription, int) ([]int64, error) {
+	return nil, fmt.Errorf("poll: %w", actions.ErrConnBroken)
+}
+
+func (c *brokenPollClient) Broken() bool { return true }
+
+// TestPollMissesSurviveTheRedialContactStamp pins the interaction the second review of #7 found:
+// every failed poll is followed by a successful re-dial, which stamps contact, so the last-reply
+// age reads "just now" - the miss streak must still grow, since it is all status has left.
+func TestPollMissesSurviveTheRedialContactStamp(t *testing.T) {
+	st := newTestStore(t)
+	if err := st.PutView(7, store.View{Name: "home", Privilege: "rw", NodeID: "root7", InitialSyncDone: true}); err != nil {
+		t.Fatalf("PutView: %v", err)
+	}
+	lc := &loopClient{views: []actions.View{{ViewID: 7, Name: "home", Privilege: "rw", NodeID: "root7"}}}
+	e := New(st, &concTransport{client: &brokenPollClient{loopClient: lc}}, t.TempDir(), "sess", discardLogger())
+
+	for i := range 3 {
+		if err := e.pollOnce(context.Background()); err == nil {
+			t.Fatalf("poll %d succeeded, want the injected failure", i+1)
+		}
+	}
+	if e.LastContact().IsZero() {
+		t.Fatal("the re-dial after a broken poll did not stamp contact (precondition of this test)")
+	}
+	if got := e.PollMisses(); got != 3 {
+		t.Errorf("PollMisses = %d, want 3 despite the re-dial stamping contact", got)
+	}
+	if !e.PollingSince().IsZero() {
+		t.Error("PollingSince is set between polls")
 	}
 }

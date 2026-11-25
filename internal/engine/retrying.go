@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"errors"
-	"io"
 	"io/fs"
 	"net"
 	"os"
@@ -20,9 +19,10 @@ import (
 // operator watching it could not tell a pending retry from a hang (issue #6). The band below the
 // threshold is reported separately as Retrying, with the last failure's reason.
 
-// reasonBlocked is the reason recorded for an op skipped behind a failing predecessor: it has no
-// failure of its own to name.
-const reasonBlocked = "waiting behind another operation on the same path that is failing"
+// reasonBlocked is the reason recorded for an op skipped behind a predecessor on an overlapping
+// path that did not complete this drain - failed, paused by its retry pacing, or replaced. It has
+// no failure of its own to name, and the predecessor is not necessarily failing.
+const reasonBlocked = "waiting behind another operation on the same path"
 
 // failureReason words the class of a failed apply for `status`. It is deliberately coarse:
 // the full error chain is in the log, and the point here is the one fact an operator acts on -
@@ -57,8 +57,9 @@ func failureReason(err error) string {
 		return "a local file or folder could not be read or written"
 	case errors.As(err, &dnsErr):
 		return "the server's name could not be resolved"
-	case errors.Is(err, actions.ErrConnBroken), errors.As(err, &opErr),
-		errors.Is(err, net.ErrClosed), errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.EOF):
+	case errors.Is(err, actions.ErrConnBroken), errors.As(err, &opErr), errors.Is(err, net.ErrClosed):
+		// Not a bare io.EOF: a large upload whose local file shrank mid-stream ends in one
+		// too (actions/resume.go), and a real transport failure already carries one of these.
 		return "the connection to the server was lost"
 	case errors.Is(err, actions.ErrUnexpectedReply):
 		return "the server sent an unexpected reply"
