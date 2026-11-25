@@ -131,8 +131,16 @@ func (e *Engine) noteOpFailure(qo store.QueuedOp, err error) {
 	e.opFailures[qo.Seq]++
 	reason := failureReason(err)
 	e.setOpLastReason(qo.Seq, reason)
-	if e.opFailures[qo.Seq] == 1 && reason == "" {
-		e.logUnclassifiedFailureLocked(qo, err)
+	if reason == "" && !errors.Is(err, context.Canceled) && !e.opWarned[qo.Seq].unclassified {
+		// Latched per streak rather than "first failure": `status` shows the LAST reason, so an
+		// op whose first failure was classified (or that was first only blocked) and later
+		// fails unclassified must still get its line. A cancelled drain is a shutdown, not a
+		// failure worth a line.
+		if e.logUnclassifiedFailureLocked(qo, err) {
+			latch := e.opWarned[qo.Seq]
+			latch.unclassified = true
+			e.setOpWarnLatch(qo.Seq, latch)
+		}
 	}
 	if e.opFailures[qo.Seq] < stuckThreshold {
 		return
@@ -179,6 +187,9 @@ type opWarnLatch struct {
 	stuck   bool
 	blocked bool
 	capped  bool
+	// unclassified: the op's unclassified failure was logged at Info this streak
+	// (logUnclassifiedFailureLocked), so `status`'s "see synosync log" has a line to find.
+	unclassified bool
 }
 
 // setOpWarnLatch stores an op's Warn latch, allocating the map for an Engine built by a test

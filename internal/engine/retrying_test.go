@@ -57,6 +57,12 @@ func TestFailureReasonClassifiesWhatAnOperatorActsOn(t *testing.T) {
 		{"os deadline", fmt.Errorf("x: %w", os.ErrDeadlineExceeded), "the server took too long to answer"},
 		// Without op_turn_timeout_s a timed-out read also marks the connection broken: it must
 		// still read as a quiet server, not a dropped connection.
+		// The kernel's ETIMEDOUT (TCP keepalive/retransmit expiry) is a LOST connection, and
+		// must read the same on every OS: Errno.Timeout() is true on Unix, false for Windows'
+		// WSAETIMEDOUT, so classifying on Timeout() split one outage in two.
+		{"kernel ETIMEDOUT", fmt.Errorf("actions: read reply: %w: %w", actions.ErrConnBroken,
+			&net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ETIMEDOUT)}),
+			"the connection to the server was lost"},
 		{"timed-out read on a broken connection", fmt.Errorf("actions: read reply: %w: %w", actions.ErrConnBroken,
 			&net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}), "the server took too long to answer"},
 		{"cancelled", fmt.Errorf("x: %w", context.Canceled), ""},
@@ -443,5 +449,64 @@ func TestUnclassifiedFirstFailureIsLoggedOncePerOpAndCapped(t *testing.T) {
 	e.noteOpFailure(op(999, "next.bin"), errors.New("unclassified"))
 	if n := strings.Count(buf.String(), msg); n != 1 {
 		t.Errorf("the next pass logged %d lines, want 1 (the cap is per pass)", n)
+	}
+}
+
+// TestUnclassifiedFailureLogLatchesPerStreak pins the two gaps the review of #8 found: the line
+// is owed to the LAST reason status shows, so an op whose first failure was classified or only
+// blocked still gets it once it fails unclassified; and a cancelled drain (a shutdown) logs
+// nothing.
+func TestUnclassifiedFailureLogLatchesPerStreak(t *testing.T) {
+	st := newTestStore(t)
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	e := New(st, &fakeTransport{client: &fakeClient{}}, t.TempDir(), "sess", log)
+	const msg = "op failed; it stays queued"
+	op := func(seq uint64) store.QueuedOp {
+		return store.QueuedOp{Seq: seq, Op: store.Op{Type: store.OpUpload, Direction: store.DirOutbound, ViewID: 1, Path: "p"}}
+	}
+	e.beginDrainPass()
+
+	e.noteOpFailure(op(1), fmt.Errorf("x: %w", actions.ErrConnBroken)) // classified first
+	e.noteOpFailure(op(1), errors.New("odd"))                          // then unclassified
+	e.noteOpFailure(op(1), errors.New("odd"))                          // latched: no second line
+	e.noteOpBlocked(op(2), nil)                                        // first only blocked
+	e.noteOpFailure(op(2), errors.New("odd"))
+	e.noteOpFailure(op(3), fmt.Errorf("drain: %w", context.Canceled)) // shutdown
+	if n := strings.Count(buf.String(), msg); n != 2 {
+		t.Fatalf("logged %d lines, want 2 (ops 1 and 2 once each, none for the cancel):\n%s", n, buf.String())
+	}
+
+	// A new streak re-earns the line.
+	buf.Reset()
+	e.clearOpFailures(1)
+	e.noteOpFailure(op(1), errors.New("odd"))
+	if n := strings.Count(buf.String(), msg); n != 1 {
+		t.Errorf("a new streak logged %d lines, want 1", n)
+	}
+}
+
+// TestUnclassifiedFailureOverTheCapIsLoggedOnALaterPass pins that the cap defers, not drops: an
+// op it suppressed is not latched, so a later pass still logs it.
+func TestUnclassifiedFailureOverTheCapIsLoggedOnALaterPass(t *testing.T) {
+	st := newTestStore(t)
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	e := New(st, &fakeTransport{client: &fakeClient{}}, t.TempDir(), "sess", log)
+	op := func(seq uint64) store.QueuedOp {
+		return store.QueuedOp{Seq: seq, Op: store.Op{Type: store.OpUpload, ViewID: 1, Path: fmt.Sprintf("f%d", seq)}}
+	}
+	e.beginDrainPass()
+	for i := range maxUnclassifiedLogsPerPass + 1 {
+		e.noteOpFailure(op(uint64(i+1)), errors.New("odd"))
+	}
+	last := fmt.Sprintf("path=f%d ", maxUnclassifiedLogsPerPass+1)
+	if strings.Contains(buf.String(), last) {
+		t.Fatalf("the op over the cap was logged in the same pass:\n%s", buf.String())
+	}
+	e.beginDrainPass()
+	e.noteOpFailure(op(uint64(maxUnclassifiedLogsPerPass+1)), errors.New("odd"))
+	if !strings.Contains(buf.String(), last) {
+		t.Errorf("the op over the cap was never logged on the next pass:\n%s", buf.String())
 	}
 }

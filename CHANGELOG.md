@@ -11,9 +11,9 @@ Notable changes to synosync. The format follows
 - `status` names an operation that failed and waits for its retry, with the reason,
   from its first failure, and shows a held change poll and failed polls instead of an
   ageing `last reply`; stuck entries always carry a reason line (#6).
-- `status` no longer flags a failed poll right after a recovery, names a quiet server as
-  slow rather than disconnected, and the log carries the first unclassified failure
-  of each operation it points to.
+- `status` no longer flags a failed poll right after a recovery, an expired socket
+  deadline reads as a slow server rather than a lost connection, and the log carries
+  the unclassified failure each "see synosync log" points to.
 - A `go install` build spells its version as a release build does (`v0.1.0`, not
   `0.1.0`).
 

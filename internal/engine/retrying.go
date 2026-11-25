@@ -58,10 +58,13 @@ func failureReason(err error) string {
 		return "a local file or folder could not be read or written"
 	case errors.As(err, &dnsErr):
 		return "the server's name could not be resolved"
-	case errors.Is(err, os.ErrDeadlineExceeded), errors.As(err, &opErr) && opErr.Timeout():
-		// A socket read/write deadline: the server went quiet, it did not drop us. Without an
-		// op_turn_timeout_s (the default) such a turn also marks the connection broken, so this
-		// is tested before the ErrConnBroken arm or it would read as a lost connection.
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		// A socket deadline WE set expired: the server went quiet, it did not drop us. Such a
+		// turn also marks the connection broken, so this is tested before the ErrConnBroken arm.
+		// Deliberately not net.OpError.Timeout(): that is also true for the kernel's ETIMEDOUT
+		// (TCP keepalive/retransmit expiry - a dropped Wi-Fi, VPN or NAS), which IS a lost
+		// connection, and on Unix only (Windows' WSAETIMEDOUT reports false), so the same
+		// outage would be worded per OS. os.ErrDeadlineExceeded matches no Errno.
 		return "the server took too long to answer"
 	case errors.Is(err, actions.ErrConnBroken), errors.As(err, &opErr), errors.Is(err, net.ErrClosed):
 		// Not a bare io.EOF: a large upload whose local file shrank mid-stream ends in one
@@ -110,19 +113,22 @@ func (e *Engine) RetryingDetails(limit int) ([]StuckOp, error) {
 // mass failure the classifier does not know cannot flood the size-capped rotating log.
 const maxUnclassifiedLogsPerPass = 20
 
-// logUnclassifiedFailureLocked logs an op's FIRST failure when failureReason has no class for
-// it. `status` then shows "see synosync log", and below stuckThreshold the log otherwise
-// carried only the first error of each drain pass (loop.go's "queue drain failed"), so for any
-// other op the pointer led nowhere. Classified failures are named in `status` itself and are
-// not logged here; the cap is per drain pass. Callers hold stuckMu.
-func (e *Engine) logUnclassifiedFailureLocked(qo store.QueuedOp, err error) {
+// logUnclassifiedFailureLocked logs an op's unclassified failure, once per failure streak (the
+// caller latches it on true). `status` then shows "see synosync log", and below stuckThreshold
+// the log otherwise carried only the first error of each drain pass (loop.go's "queue drain
+// failed"), so for any other op the pointer led nowhere. Classified failures are named in `status` itself and are
+// not logged here; the cap is per drain pass, and reports false when it bit. Callers hold stuckMu.
+func (e *Engine) logUnclassifiedFailureLocked(qo store.QueuedOp, err error) bool {
 	if e.unclassifiedPass != e.drainPass {
 		e.unclassifiedPass, e.unclassifiedLogged = e.drainPass, 0
 	}
 	if e.unclassifiedLogged >= maxUnclassifiedLogsPerPass {
-		return
+		// Not latched: an op over the cap gets its line on a later pass.
+		return false
 	}
 	e.unclassifiedLogged++
 	e.log.Info("engine: op failed; it stays queued and is retried on the next pass",
-		"type", qo.Type, "direction", qo.Direction, "view", qo.ViewID, "path", qo.Path, "err", err)
+		"type", qo.Type, "direction", qo.Direction, "view", qo.ViewID, "path", qo.Path,
+		"seq", qo.Seq, "err", err)
+	return true
 }

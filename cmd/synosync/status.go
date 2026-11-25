@@ -274,7 +274,10 @@ func headline(r ipc.StatusReport, host string) string {
 // like - the connection broke, the re-dial succeeded and the new poll is held, normally for up
 // to EventPollTimeout - and "the last 1 poll(s) failed" beside it read as trouble for minutes
 // after the network was fine again. A server that keeps failing reaches two within one or two
-// deadlines, and between polls the first failure is still shown.
+// deadlines, and between polls the first failure is still shown. The cost is accepted: a server
+// that handshakes but wedges every poll (rare - a dead peer trips TCP keepalive and reads
+// "reconnecting...") shows its first miss only after the second deadline, 10-20 min at the
+// default 300 s + 300 s slack instead of 10.
 //
 // A user pause parks the loop, so no poll runs and the count is frozen; it is left out then.
 func serverText(r ipc.StatusReport, now time.Time) string {
