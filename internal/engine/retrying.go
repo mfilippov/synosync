@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/mfilippov/synosync/internal/actions"
+	"github.com/mfilippov/synosync/internal/store"
 )
 
 // Ops that failed a drain but have not yet reached stuckThreshold.
@@ -57,13 +58,18 @@ func failureReason(err error) string {
 		return "a local file or folder could not be read or written"
 	case errors.As(err, &dnsErr):
 		return "the server's name could not be resolved"
+	case errors.Is(err, os.ErrDeadlineExceeded), errors.As(err, &opErr) && opErr.Timeout():
+		// A socket read/write deadline: the server went quiet, it did not drop us. Without an
+		// op_turn_timeout_s (the default) such a turn also marks the connection broken, so this
+		// is tested before the ErrConnBroken arm or it would read as a lost connection.
+		return "the server took too long to answer"
 	case errors.Is(err, actions.ErrConnBroken), errors.As(err, &opErr), errors.Is(err, net.ErrClosed):
 		// Not a bare io.EOF: a large upload whose local file shrank mid-stream ends in one
 		// too (actions/resume.go), and a real transport failure already carries one of these.
 		return "the connection to the server was lost"
 	case errors.Is(err, actions.ErrUnexpectedReply):
 		return "the server sent an unexpected reply"
-	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, os.ErrDeadlineExceeded):
+	case errors.Is(err, context.DeadlineExceeded):
 		return "the operation timed out"
 	default:
 		return ""
@@ -98,4 +104,25 @@ func (e *Engine) RetryingOps() int {
 // Safe to call concurrently with Run, like StuckDetails.
 func (e *Engine) RetryingDetails(limit int) ([]StuckOp, error) {
 	return e.failingDetails(1, stuckThreshold, limit)
+}
+
+// maxUnclassifiedLogsPerPass caps the first-failure Info lines one drain pass may log, so a
+// mass failure the classifier does not know cannot flood the size-capped rotating log.
+const maxUnclassifiedLogsPerPass = 20
+
+// logUnclassifiedFailureLocked logs an op's FIRST failure when failureReason has no class for
+// it. `status` then shows "see synosync log", and below stuckThreshold the log otherwise
+// carried only the first error of each drain pass (loop.go's "queue drain failed"), so for any
+// other op the pointer led nowhere. Classified failures are named in `status` itself and are
+// not logged here; the cap is per drain pass. Callers hold stuckMu.
+func (e *Engine) logUnclassifiedFailureLocked(qo store.QueuedOp, err error) {
+	if e.unclassifiedPass != e.drainPass {
+		e.unclassifiedPass, e.unclassifiedLogged = e.drainPass, 0
+	}
+	if e.unclassifiedLogged >= maxUnclassifiedLogsPerPass {
+		return
+	}
+	e.unclassifiedLogged++
+	e.log.Info("engine: op failed; it stays queued and is retried on the next pass",
+		"type", qo.Type, "direction", qo.Direction, "view", qo.ViewID, "path", qo.Path, "err", err)
 }

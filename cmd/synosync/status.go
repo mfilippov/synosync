@@ -269,11 +269,23 @@ func headline(r ipc.StatusReport, host string) string {
 // connection but resets every poll at once spends almost no time polling - it fails, the event
 // connection re-dials (stamping contact) and the loop waits before polling again - so a count
 // gated on the poll in flight left it reading "last reply just now".
+//
+// While a poll IS in flight, a single failure is not shown: that is what every recovery looks
+// like - the connection broke, the re-dial succeeded and the new poll is held, normally for up
+// to EventPollTimeout - and "the last 1 poll(s) failed" beside it read as trouble for minutes
+// after the network was fine again. A server that keeps failing reaches two within one or two
+// deadlines, and between polls the first failure is still shown.
+//
+// A user pause parks the loop, so no poll runs and the count is frozen; it is left out then.
 func serverText(r ipc.StatusReport, now time.Time) string {
 	s := connText(r.Connection)
 	up := !r.Connection.Connecting && !r.Connection.Reconnecting && !r.Connection.Paused
 	polling := up && !r.PollingSince.IsZero()
-	failing := up && r.PollMisses > 0
+	minMisses := 1
+	if polling {
+		minMisses = 2
+	}
+	failing := up && !r.Paused && r.PollMisses >= minMisses
 	if polling {
 		s += ", waiting for server changes for " + shortDuration(now.Sub(r.PollingSince))
 	}

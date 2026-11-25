@@ -1,13 +1,16 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -51,7 +54,11 @@ func TestFailureReasonClassifiesWhatAnOperatorActsOn(t *testing.T) {
 			"a local file or folder could not be read or written"},
 		{"bare errno", fmt.Errorf("x: %w", syscall.EACCES), ""},
 		{"ctx deadline", fmt.Errorf("x: %w", context.DeadlineExceeded), "the operation timed out"},
-		{"os deadline", fmt.Errorf("x: %w", os.ErrDeadlineExceeded), "the operation timed out"},
+		{"os deadline", fmt.Errorf("x: %w", os.ErrDeadlineExceeded), "the server took too long to answer"},
+		// Without op_turn_timeout_s a timed-out read also marks the connection broken: it must
+		// still read as a quiet server, not a dropped connection.
+		{"timed-out read on a broken connection", fmt.Errorf("actions: read reply: %w: %w", actions.ErrConnBroken,
+			&net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}), "the server took too long to answer"},
 		{"cancelled", fmt.Errorf("x: %w", context.Canceled), ""},
 		{"unknown", errors.New("something else"), ""},
 	}
@@ -394,5 +401,47 @@ func TestPollMissesSurviveTheRedialContactStamp(t *testing.T) {
 	}
 	if !e.PollingSince().IsZero() {
 		t.Error("PollingSince is set between polls")
+	}
+}
+
+// TestUnclassifiedFirstFailureIsLoggedOncePerOpAndCapped pins the log line behind `status`'s
+// "see synosync log": an op whose failure has no class gets one Info line on its FIRST failure
+// (below stuckThreshold the log otherwise carried only the first error of each drain pass), a
+// classified failure gets none since `status` names it, and one pass logs at most
+// maxUnclassifiedLogsPerPass of them.
+func TestUnclassifiedFirstFailureIsLoggedOncePerOpAndCapped(t *testing.T) {
+	st := newTestStore(t)
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	e := New(st, &fakeTransport{client: &fakeClient{}}, t.TempDir(), "sess", log)
+	const msg = "op failed; it stays queued"
+
+	op := func(seq uint64, path string) store.QueuedOp {
+		return store.QueuedOp{Seq: seq, Op: store.Op{Type: store.OpUpload, Direction: store.DirOutbound, ViewID: 1, Path: path}}
+	}
+	e.beginDrainPass()
+	e.noteOpFailure(op(1, "odd.bin"), errors.New("something unclassified"))
+	e.noteOpFailure(op(1, "odd.bin"), errors.New("something unclassified"))
+	e.noteOpFailure(op(2, "net.bin"), fmt.Errorf("x: %w", actions.ErrConnBroken))
+	if n := strings.Count(buf.String(), msg); n != 1 {
+		t.Fatalf("logged %d first-failure lines, want 1 (the unclassified op, once):\n%s", n, buf.String())
+	}
+	if !strings.Contains(buf.String(), "odd.bin") || !strings.Contains(buf.String(), "something unclassified") {
+		t.Errorf("the line does not name the op and its error:\n%s", buf.String())
+	}
+
+	buf.Reset()
+	e.beginDrainPass()
+	for i := range maxUnclassifiedLogsPerPass + 5 {
+		e.noteOpFailure(op(uint64(100+i), fmt.Sprintf("f%d", i)), errors.New("unclassified"))
+	}
+	if n := strings.Count(buf.String(), msg); n != maxUnclassifiedLogsPerPass {
+		t.Errorf("one pass logged %d lines, want the cap %d", n, maxUnclassifiedLogsPerPass)
+	}
+	buf.Reset()
+	e.beginDrainPass()
+	e.noteOpFailure(op(999, "next.bin"), errors.New("unclassified"))
+	if n := strings.Count(buf.String(), msg); n != 1 {
+		t.Errorf("the next pass logged %d lines, want 1 (the cap is per pass)", n)
 	}
 }

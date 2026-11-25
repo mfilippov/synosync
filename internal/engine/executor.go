@@ -94,8 +94,10 @@ var errOpReplaced = errors.New("engine: op replaced by a compensating op")
 // escalated as stuck: counted in StuckOps - the `Stuck` line in
 // `status` - and logged with a one-time Warn. Ten failed drains is far past any expected
 // transient (a broken connection re-dials within one drain; an unknown parent resolves as
-// soon as the parent's own op runs), while still surfacing a genuine wedge within about a
-// minute of default 5s scan cycles.
+// soon as the parent's own op runs). It is counted in DRAINS, not time: a busy sync drains
+// every few seconds, but an idle one drains once per long poll, so ten failures can take
+// ~50 min at the default EventPollTimeout. The ops below the threshold are therefore
+// surfaced from their first failure as RetryingOps (the `Waiting` status line).
 const stuckThreshold = 10
 
 // noteOpFailure records one more failed transient apply for a queued op, escalating with
@@ -127,7 +129,11 @@ func (e *Engine) noteOpFailure(qo store.QueuedOp, err error) {
 	e.stuckMu.Lock()
 	defer e.stuckMu.Unlock()
 	e.opFailures[qo.Seq]++
-	e.setOpLastReason(qo.Seq, failureReason(err))
+	reason := failureReason(err)
+	e.setOpLastReason(qo.Seq, reason)
+	if e.opFailures[qo.Seq] == 1 && reason == "" {
+		e.logUnclassifiedFailureLocked(qo, err)
+	}
 	if e.opFailures[qo.Seq] < stuckThreshold {
 		return
 	}
