@@ -57,6 +57,21 @@ type StatusReport struct {
 	// wrong and nothing about what; the paths and reasons were in the log only. Additive to the
 	// JSON contract like Stuck itself.
 	StuckOps []StuckEntry `json:"stuck_ops,omitempty"`
+	// Retrying is the number of queued ops that failed at least one drain but have not yet
+	// reached the stuck threshold, and RetryingOps names them like StuckOps. A failed op waits
+	// for the next drain, which follows the current long poll, so below the threshold it
+	// used to read exactly like work that is moving. The CLI labels this band "Waiting"; its
+	// "Retrying" line is Stuck above. Additive to the JSON contract.
+	Retrying    int          `json:"retrying,omitempty"`
+	RetryingOps []StuckEntry `json:"retrying_ops,omitempty"`
+	// PollingSince is when the long poll now in flight was issued, zero between polls. Its
+	// reply is the only regular exchange of an idle sync, so while it holds LastContact ages
+	// on a live connection. Additive to the JSON contract.
+	PollingSince time.Time `json:"polling_since,omitzero"`
+	// PollMisses is how many long polls in a row failed (timed out, broken, or rejected); a
+	// held fairness pass or an answer resets it. It is what tells a server that accepts
+	// connections but never answers apart from a held poll. Additive to the JSON contract.
+	PollMisses int `json:"poll_misses,omitempty"`
 	// AppliedOps, TransferredBytes and MovingFor report what the RUNNING daemon has
 	// actually moved: operations applied cleanly, bytes of content transferred in either
 	// direction, and how long it has been moving them (the window starts at the first

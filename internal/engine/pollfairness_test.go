@@ -347,3 +347,46 @@ func TestPollOnceClosedWakeChannelCancelsOnAFairnessPass(t *testing.T) {
 		t.Errorf("ReplaceEvent calls = %d, want 1 (the cancelled in-flight read is re-dialed)", replaces)
 	}
 }
+
+// TestPollMissStreakUnderChurn drives the miss streak through the real pollOnce against a quiet
+// server: a full-length poll that times out is a miss, a wake-interrupted poll says nothing, and
+// the fairness pass that then holds its whole window resets the streak. Without that reset, one
+// blip followed by steady local churn left `status` reporting a failed poll for as long as the
+// churn lasted (third review of #7).
+func TestPollMissStreakUnderChurn(t *testing.T) {
+	e, c, _, _ := churnFixture(t)
+	c.rtt = time.Hour // a quiet server: it never answers inside the window
+	e.limits.EventPollTimeout = 1
+	e.limits.PollDeadlineSlack = 0
+	wake := make(chan struct{}, 1)
+	e.SetWake(wake)
+
+	// A full-length poll the server leaves unanswered past the client deadline: a miss.
+	if err := e.pollOnce(context.Background()); err != nil {
+		t.Fatalf("pollOnce (deadline): %v", err)
+	}
+	if got := e.PollMisses(); got != 1 {
+		t.Fatalf("PollMisses after a timed-out full poll = %d, want 1", got)
+	}
+
+	// Churn: the wake cuts the next poll short - no evidence either way.
+	wake <- struct{}{}
+	if err := e.pollOnce(context.Background()); err != nil {
+		t.Fatalf("pollOnce (interrupted): %v", err)
+	}
+	if got := e.PollMisses(); got != 1 {
+		t.Fatalf("PollMisses after a wake-interrupted poll = %d, want 1 (unchanged)", got)
+	}
+
+	// The owed fairness pass holds its planned window without a socket error: the channel works.
+	wake <- struct{}{}
+	if err := e.pollOnce(context.Background()); err != nil {
+		t.Fatalf("pollOnce (fairness): %v", err)
+	}
+	if !errors.Is(c.observedErr(), context.DeadlineExceeded) {
+		t.Fatalf("fairness pass ended with %v, want its own deadline", c.observedErr())
+	}
+	if got := e.PollMisses(); got != 0 {
+		t.Errorf("PollMisses after a fairness pass held its window = %d, want 0", got)
+	}
+}

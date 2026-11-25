@@ -127,6 +127,7 @@ func (e *Engine) noteOpFailure(qo store.QueuedOp, err error) {
 	e.stuckMu.Lock()
 	defer e.stuckMu.Unlock()
 	e.opFailures[qo.Seq]++
+	e.setOpLastReason(qo.Seq, failureReason(err))
 	if e.opFailures[qo.Seq] < stuckThreshold {
 		return
 	}
@@ -216,6 +217,7 @@ func (e *Engine) noteOpBlocked(qo store.QueuedOp, culprit *chainCulprit) {
 	e.stuckMu.Lock()
 	defer e.stuckMu.Unlock()
 	e.opFailures[qo.Seq]++
+	e.setOpLastReason(qo.Seq, reasonBlocked)
 	if e.opFailures[qo.Seq] < stuckThreshold {
 		return
 	}
@@ -254,6 +256,7 @@ func (e *Engine) clearOpFailures(seq uint64) {
 	// The escalation Warns are latched per streak, so they leave with the streak: an op that
 	// converges and later wedges again is a new wedge and deserves the log lines again.
 	delete(e.opWarned, seq)
+	delete(e.opLastReason, seq)
 }
 
 // carryDoom records that a doomed rename could not have its doom RESOLVED this pass (the

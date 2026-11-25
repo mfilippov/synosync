@@ -11,6 +11,8 @@ package engine
 // it says nothing about itself.
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,6 +36,18 @@ type progress struct {
 	// until the first reply. See noteServerContact for why the socket state cannot
 	// answer this.
 	lastContactUnixNano atomic.Int64
+	// pollSinceUnixNano is when the long poll now in flight was issued; zero between polls.
+	// A healthy idle sync spends up to EventPollTimeout inside one poll with no reply to
+	// stamp, so without this `status` could only show a last-reply age that grows for
+	// minutes on a perfectly live connection (issue #6).
+	pollSinceUnixNano atomic.Int64
+	// pollMisses counts consecutive long polls that ended without the server's answer: a
+	// client-side deadline on a full-length poll, or a broken read. A wake that cut the poll
+	// short, a fairness pass reaching its planned end, and a cancelled run are not misses, and
+	// an answered poll resets it. It, not the last-reply age, is what tells a server that
+	// accepts connections but never answers apart from a held poll: a completed re-dial
+	// stamps contact, so the age alone no longer grows behind a silent server (issue #6).
+	pollMisses atomic.Int64
 	// startedUnixNano fixes the window the rate is computed over. It is set on the first
 	// applied op rather than at construction, so time spent connecting, walking or planning
 	// does not dilute the transfer rate into meaninglessness.
@@ -108,9 +122,10 @@ func transferredBytes(op store.Op) int64 {
 // way to tell them from a healthy idle sync - which is exactly the state a sync client
 // spends most of its life in.
 //
-// The two stamping sites cover every exchange: the mandated worker-lease helper
-// (Engine.withWorker), through which every action turn runs, and a long poll that
-// returned a reply. Both stamp only on SUCCESS, so a failed turn leaves the previous
+// The stamping sites cover every exchange: the mandated worker-lease helper
+// (Engine.withWorker), through which every action turn runs, a long poll that
+// returned a reply, and a completed event-connection re-dial (replaceEventConn). All stamp
+// only on SUCCESS, so a failed turn leaves the previous
 // time standing and the line ages, which is the signal.
 func (p *progress) noteServerContact() {
 	p.lastContactUnixNano.Store(time.Now().UnixNano())
@@ -129,6 +144,57 @@ func (p *progress) lastContact() time.Time {
 // LastContact reports when this engine last received a reply from the server, or the
 // zero time if it has not yet during this run.
 func (e *Engine) LastContact() time.Time { return e.progress.lastContact() }
+
+// startPoll and endPoll bracket a long poll in flight.
+func (p *progress) startPoll() { p.pollSinceUnixNano.Store(time.Now().UnixNano()) }
+func (p *progress) endPoll()   { p.pollSinceUnixNano.Store(0) }
+
+// PollingSince reports when the long poll now in flight was issued, or the zero time when no
+// poll is in flight. The poll is bounded by its own deadline, so a connection that never
+// answers still shows up - as PollMisses, since each timed-out poll is re-issued.
+func (e *Engine) PollingSince() time.Time {
+	if ns := e.progress.pollSinceUnixNano.Load(); ns > 0 {
+		return time.Unix(0, ns)
+	}
+	return time.Time{}
+}
+
+// pollAnswered classifies a finished long poll: true if it is evidence the event channel works,
+// false if it was a miss, and nil if the outcome says nothing about the server - the poll was
+// cut short by a wake or the run was cancelled.
+//
+// A fairness pass that reaches its planned, shortened deadline counts as evidence, not as
+// nothing: the server accepted the subscribe and held the socket for the whole window without
+// an error, which is all a quiet healthy server ever does inside one. Under continuous local
+// churn polls only ever alternate wake-interrupt / fairness pass, so if the fairness pass were
+// neutral, nothing would ever reset the streak after one real blip, and `status` would report
+// "the last 1 poll(s) failed" on a healthy daemon for as long as the churn lasted.
+func pollAnswered(err error, honorWake, interrupted, cancelled bool) *bool {
+	ok := err == nil
+	switch {
+	case ok:
+	case interrupted, cancelled:
+		return nil
+	case !honorWake && errors.Is(err, context.DeadlineExceeded):
+		ok = true
+	}
+	return &ok
+}
+
+// notePollOutcome folds pollAnswered into the miss streak; nil leaves it unchanged.
+func (p *progress) notePollOutcome(answered *bool) {
+	switch {
+	case answered == nil:
+	case *answered:
+		p.pollMisses.Store(0)
+	default:
+		p.pollMisses.Add(1)
+	}
+}
+
+// PollMisses reports how many long polls in a row failed: timed out, broken, or rejected by the
+// server - any of which, repeated, is what an operator needs to see.
+func (e *Engine) PollMisses() int { return int(e.progress.pollMisses.Load()) }
 
 // startListing marks a cold-start walk of viewID as begun, with its counters at zero.
 func (p *progress) startListing(viewID uint64) {

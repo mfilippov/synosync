@@ -564,7 +564,9 @@ func (e *Engine) pollOnce(ctx context.Context) error {
 			// poll's read the moment it starts.
 		}
 	}()
+	e.progress.startPoll()
 	changed, err := ec.LongPoll(pollCtx, subscribe, pollTimeout)
+	e.progress.endPoll()
 	if digester != nil {
 		e.profileDigest = digester.ProfileDigest()
 	}
@@ -576,6 +578,7 @@ func (e *Engine) pollOnce(ctx context.Context) error {
 		// last-contact line to hours on a perfectly healthy client.
 		e.progress.noteServerContact()
 	}
+	e.progress.notePollOutcome(pollAnswered(err, honorWake, interrupted.Load() || wakeClosed.Load(), ctx.Err() != nil))
 	if wakeClosed.Load() {
 		// Clear the seam so subsequent polls fall back to the periodic scan. Safe
 		// to mutate e.wake here: stop+wg.Wait fenced the goroutine before this
@@ -863,7 +866,12 @@ func (e *Engine) replaceEventConn(ctx context.Context, ec syncClient) error {
 			return rerr
 		}
 		e.log.Warn("engine: replacing event connection failed; will retry", "err", rerr)
+		return nil
 	}
+	// A completed re-dial is a TLS handshake and a session the server answered, so it is
+	// contact: without this, the age kept counting from before an outage for as long as the
+	// first poll on the new connection held (issue #6).
+	e.progress.noteServerContact()
 	return nil
 }
 

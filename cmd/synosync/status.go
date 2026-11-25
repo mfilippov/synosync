@@ -159,33 +159,45 @@ func renderStatusOpts(w io.Writer, r ipc.StatusReport, verbose bool) {
 	if r.DeadLettered > 0 {
 		line("Skipped", "%d item(s) the client gave up on (synosync drops)", r.DeadLettered)
 	}
-	if r.Stuck > 0 {
-		line("Retrying", "%d operation(s) failing repeatedly, still retrying", r.Stuck)
-		// Naming them is the difference between a number and something to act on. The daemon
-		// caps the list, so say when there is more than what is shown.
-		for _, s := range r.StuckOps {
+	// Naming the ops is the difference between a number and something to act on. The daemon
+	// caps each list, so say when there is more than what is shown.
+	listFailing := func(total int, ops []ipc.StuckEntry) {
+		for _, s := range ops {
 			fmt.Fprintf(w, "    %s  %s\n", describeStuck(s), s.Path)
 			if s.NewPath != "" {
 				fmt.Fprintf(w, "      moving to: %s\n", s.NewPath)
 			}
-			if s.Reason != "" {
-				fmt.Fprintf(w, "      reason:    %s\n", s.Reason)
+			reason := s.Reason
+			if reason == "" {
+				reason = "see synosync log"
 			}
+			fmt.Fprintf(w, "      reason:    %s\n", reason)
 		}
-		if n := r.Stuck - len(r.StuckOps); n > 0 && len(r.StuckOps) > 0 {
+		if n := total - len(ops); n > 0 && len(ops) > 0 {
 			fmt.Fprintf(w, "    ...and %d more\n", n)
 		}
+	}
+	if r.Stuck > 0 {
+		line("Retrying", "%d operation(s) failing repeatedly, still retrying", r.Stuck)
+		listFailing(r.Stuck, r.StuckOps)
+	}
+	if r.Retrying > 0 {
+		// Below the stuck threshold a failed op waits for the next drain, which runs after
+		// the current long poll returns - minutes on an idle sync. Say so, and how to start
+		// that pass sooner; not "retry now", since a paced or blocked op still waits its turn.
+		// The hint only while a pass can actually run: paused or without a connection, the
+		// trigger just waits like everything else.
+		hint := ""
+		if !r.Paused && !r.Connection.Connecting && !r.Connection.Reconnecting && !r.Connection.Paused {
+			hint = " (synosync sync starts the next pass now)"
+		}
+		line("Waiting", "%d operation(s) failed their last attempt and will be retried%s", r.Retrying, hint)
+		listFailing(r.Retrying, r.RetryingOps)
 	}
 	if r.DiskFull {
 		line("Disk", "full - transfers are retrying; free some space to resume")
 	}
-	server := connText(r.Connection)
-	// Only once the server has actually answered: before that there is nothing to age, and
-	// "never" on a daemon three seconds into its bring-up would read as a fault.
-	if !r.LastContact.IsZero() {
-		server += ", last reply " + humanAge(time.Since(r.LastContact))
-	}
-	line("Server", "%s", server)
+	line("Server", "%s", serverText(r, time.Now()))
 
 	if !verbose {
 		return
@@ -242,6 +254,53 @@ func headline(r ipc.StatusReport, host string) string {
 			s += " - last change " + humanAge(time.Since(r.LastApplied))
 		}
 		return s
+	}
+}
+
+// serverText words the Server line: the connection state, and the evidence the server is
+// answering. While a long poll holds, the last-reply age grows on a live connection, so the
+// held poll is shown instead (issue #6). A server that accepts connections but never answers
+// also always has a poll in flight - each one times out and is re-issued - so the daemon's
+// count of polls in a row that failed decides: with any, the line says so and keeps
+// the age. Neither a slow local scan before the poll nor the contact a re-dial stamps can
+// hide that count, which is why it, and not the gap between the two times, is the signal.
+//
+// The failed-poll count is shown whether or not a poll is in flight: a server that accepts the
+// connection but resets every poll at once spends almost no time polling - it fails, the event
+// connection re-dials (stamping contact) and the loop waits before polling again - so a count
+// gated on the poll in flight left it reading "last reply just now".
+func serverText(r ipc.StatusReport, now time.Time) string {
+	s := connText(r.Connection)
+	up := !r.Connection.Connecting && !r.Connection.Reconnecting && !r.Connection.Paused
+	polling := up && !r.PollingSince.IsZero()
+	failing := up && r.PollMisses > 0
+	if polling {
+		s += ", waiting for server changes for " + shortDuration(now.Sub(r.PollingSince))
+	}
+	if failing {
+		s += fmt.Sprintf(", the last %d poll(s) failed", r.PollMisses)
+	}
+	if polling && !failing {
+		return s
+	}
+	// Only once the server has actually answered: before that there is nothing to age, and
+	// "never" on a daemon three seconds into its bring-up would read as a fault.
+	if !r.LastContact.IsZero() {
+		s += ", last reply " + humanAge(now.Sub(r.LastContact))
+	}
+	return s
+}
+
+// shortDuration renders a span in the same compact units as humanAge, so one line does not
+// mix "20 s" with "30s ago".
+func shortDuration(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 	}
 }
 

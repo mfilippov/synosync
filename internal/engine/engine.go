@@ -258,6 +258,12 @@ type Engine struct {
 	// clearOpFailures, like opFailures/opServerErrs; in-memory only by design.
 	opWarned map[uint64]opWarnLatch
 
+	// opLastReason holds, per queue seq, a short human reason for the op's most recent
+	// failed (or blocked) drain, so `status` can say WHY an op is waiting from its very
+	// first failure rather than only once it crosses stuckThreshold (retrying.go). Guarded
+	// by stuckMu and cleared with the streak in clearOpFailures; in-memory only by design.
+	opLastReason map[uint64]string
+
 	// nodeAbsentConfirms tracks, per (view, path), how many drain passes in a row a
 	// path-addressed absence probe answered with the path-error sentinel.
 	// The sentinel (28672) conflates "no such path" with a server-side timeout by the client's
@@ -1712,9 +1718,10 @@ type StuckOp struct {
 	NewPath string
 	// Failures is how many consecutive drains it has failed.
 	Failures int
-	// Reason is what the last failure was, when the engine has a name for it. Empty when the
-	// op is stuck without a recognised server verdict - including the common case of an op
-	// merely BLOCKED behind a failing predecessor, which has no failure of its own.
+	// Reason is what the last failure was, when the engine has a name for it: the server's
+	// rejection code if it keeps sending one, else the last failure's class (failureReason),
+	// including an op merely BLOCKED behind a failing predecessor. Empty when the failure
+	// fits no class the engine can word.
 	Reason string
 }
 
@@ -1729,18 +1736,25 @@ type StuckOp struct {
 // read afterwards. An op that drains between the two is simply absent from the listing, which
 // is the right answer for it by then.
 func (e *Engine) StuckDetails(limit int) ([]StuckOp, error) {
+	return e.failingDetails(stuckThreshold, 0, limit)
+}
+
+// failingDetails lists the queued ops whose failure streak is in [lo, hi) - hi zero meaning
+// unbounded - worst first, capped at limit. StuckDetails and RetryingDetails are its two bands.
+func (e *Engine) failingDetails(lo, hi, limit int) ([]StuckOp, error) {
 	type stuckFacts struct {
 		failures int
 		code     int64
 		hasCode  bool
+		reason   string
 	}
 	facts := make(map[uint64]stuckFacts)
 	e.stuckMu.Lock()
 	for seq, failures := range e.opFailures {
-		if failures < stuckThreshold {
+		if failures < lo || (hi > 0 && failures >= hi) {
 			continue
 		}
-		f := stuckFacts{failures: failures}
+		f := stuckFacts{failures: failures, reason: e.opLastReason[seq]}
 		if st, ok := e.opServerErrs[seq]; ok {
 			f.code, f.hasCode = st.code, true
 		}
@@ -1767,14 +1781,21 @@ func (e *Engine) StuckDetails(limit int) ([]StuckOp, error) {
 			NewPath:   qo.NewPath,
 			Failures:  f.failures,
 		}
-		if f.hasCode {
+		// The server's own rejection code is the more specific fact; the last failure's
+		// classification is the fallback, so a transient (a dropped connection) is named too.
+		// Except when the op's latest drain only BLOCKED it: a code streak from its own earlier
+		// applies is stale then, and the operator must look at the op it waits behind.
+		switch {
+		case f.reason == reasonBlocked || !f.hasCode:
+			s.Reason = f.reason
+		default:
 			s.Reason = serverErrStreakReason(f.code)
 		}
 		out = append(out, s)
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("engine: list stuck ops: %w", err)
+		return nil, fmt.Errorf("engine: list failing ops: %w", err)
 	}
 	// Worst first: the op that has failed most is the one to look at, and a stable tiebreak on
 	// path keeps the listing from reshuffling between calls.
