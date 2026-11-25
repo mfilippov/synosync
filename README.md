@@ -30,7 +30,7 @@ The Windows binary is also Authenticode-signed:
 Get-AuthenticodeSignature .\synosync.exe   # Status: Valid, signer: Mikhail Filippov
 ```
 
-Or build it with Go 1.27.2 or newer:
+Or build it with Go 1.27.4 or newer:
 
 ```sh
 go install github.com/mfilippov/synosync/cmd/synosync@latest
@@ -542,7 +542,7 @@ healthy file off to a `_Conflict` copy on the way.
 
 - A Synology NAS running Synology Drive Server. Tested against DSM 7.2.2 with Drive
   Server 4.0; other versions may differ in ways only a run against them shows.
-- To build: Go 1.27.2 or newer (`go.mod` pins the toolchain; an older Go 1.21+
+- To build: Go 1.27.4 or newer (`go.mod` pins the toolchain; an older Go 1.21+
   downloads it automatically). Release binaries need nothing installed.
 - A system keychain for the session token and certificate pin: Windows Credential
   Manager, the macOS login keychain, or on Linux a Secret Service provider on the

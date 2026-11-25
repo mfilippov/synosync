@@ -38,7 +38,7 @@ the platform's service unit.
   SmartScreen prompt on first run.
 
 Check what you are running with `synosync version`. It prints the version, the Go
-toolchain and the platform, e.g. `synosync 0.1.0-rc.1 (go1.27.2, linux/amd64)`.
+toolchain and the platform, e.g. `synosync v0.1.1 (go1.27.4, linux/amd64)`.
 Quote that line in every report.
 
 ### Client requirements

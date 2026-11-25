@@ -21,7 +21,7 @@ say how you made them in the pull request.
 
 ## Building and testing
 
-Go 1.27.2 or newer. Before opening a pull request:
+Go 1.27.4 or newer. Before opening a pull request:
 
 ```sh
 make test         # go test -race ./...
