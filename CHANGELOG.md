@@ -6,6 +6,8 @@ Notable changes to synosync. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-25
+
 ### Security
 
 - Built with Go 1.27.4 (fixes GO-2026-6859 in the standard library; synosync does not

@@ -4,7 +4,7 @@ A cross-platform, console two-way sync client for Synology Drive, written in
 pure Go (no cgo). It connects to Synology only over HTTPS/TLS and implements the
 `sproto` wire protocol from scratch.
 
-**Status: 0.1.0, an early release.** It deletes and overwrites files as a sync client must,
+**Status: 0.1.1, an early release.** It deletes and overwrites files as a sync client must,
 and it has been run against few servers so far. Keep a backup of anything you point it at.
 [docs/TESTING.md](docs/TESTING.md) covers protecting your data, what to try, and how to
 report a problem.
