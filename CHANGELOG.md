@@ -8,6 +8,9 @@ Notable changes to synosync. The format follows
 
 ### Fixed
 
+- `status` names an operation that failed and waits for its retry, with the reason,
+  from its first failure, and shows a held change poll instead of an ageing
+  `last reply` (#6).
 - A `go install` build spells its version as a release build does (`v0.1.0`, not
   `0.1.0`).
 

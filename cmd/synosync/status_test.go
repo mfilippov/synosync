@@ -384,6 +384,75 @@ func TestStatusStuckWithoutDetailsStillReportsTheCount(t *testing.T) {
 	}
 }
 
+// TestStatusNamesOpsWaitingToRetry pins the band below the stuck threshold (issue #6): a failed
+// op waits for the next drain, minutes away on an idle sync, and `status` must say which op,
+// why, and how to retry now instead of reading like work that is moving.
+func TestStatusNamesOpsWaitingToRetry(t *testing.T) {
+	var buf bytes.Buffer
+	renderStatus(&buf, ipc.StatusReport{
+		PendingOps: 2,
+		Retrying:   2,
+		RetryingOps: []ipc.StuckEntry{
+			{ViewID: 1, Op: "rename", Direction: "outbound", Path: "VPN/a.conf", NewPath: "VPN/b.conf",
+				Failures: 2, Reason: "the connection to the server was lost"},
+			{ViewID: 1, Op: "upload", Direction: "outbound", Path: "x.bin", Failures: 1},
+		},
+	})
+	out := buf.String()
+	for _, want := range []string{
+		"Waiting:   2 operation(s) failed and will be retried (run synosync sync to retry now)",
+		"VPN/a.conf",
+		"moving to: VPN/b.conf",
+		"reason:    the connection to the server was lost",
+		"reason:    see synosync log",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Retrying:") {
+		t.Errorf("below the threshold the stuck line must not appear:\n%s", out)
+	}
+}
+
+// TestServerTextShowsAHeldPoll pins the Server line while a long poll holds. The last-reply age
+// grows on a live connection for as long as the poll holds, so the poll is shown instead; the
+// age comes back beside it only when the last reply predates the poll, which is how a server
+// that stopped answering looks (issue #6).
+func TestServerTextShowsAHeldPoll(t *testing.T) {
+	now := time.Date(2026, 11, 25, 14, 51, 0, 0, time.UTC)
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	cases := []struct {
+		name string
+		r    ipc.StatusReport
+		want string
+	}{
+		{"idle healthy poll",
+			ipc.StatusReport{LastContact: ago(3*time.Minute + 20*time.Second), PollingSince: ago(3 * time.Minute)},
+			"connected, waiting for server changes for 3 min"},
+		{"poll long after the last reply",
+			ipc.StatusReport{LastContact: ago(12 * time.Minute), PollingSince: ago(4 * time.Minute)},
+			"connected, waiting for server changes for 4 min, last reply 12m ago"},
+		{"poll before any reply",
+			ipc.StatusReport{PollingSince: ago(30 * time.Second)},
+			"connected, waiting for server changes for 30 s"},
+		{"between polls",
+			ipc.StatusReport{LastContact: ago(90 * time.Second)},
+			"connected, last reply 1m ago"},
+		{"reconnecting hides a stale poll",
+			ipc.StatusReport{Connection: ipc.ConnState{Reconnecting: true},
+				LastContact: ago(12 * time.Minute), PollingSince: ago(4 * time.Minute)},
+			"reconnecting..., last reply 12m ago"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := serverText(tc.r, now); got != tc.want {
+				t.Errorf("serverText = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestPausedConnText pins each pause cause to its own remedy, and pins the fallback to
 // naming none. A wrong remedy is worse than a missing one: the operator acts on it.
 func TestPausedConnText(t *testing.T) {

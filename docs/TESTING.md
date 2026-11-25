@@ -93,7 +93,7 @@ synosync config set log_level debug
 
 | Command | Tells you |
 |---|---|
-| `synosync status` | first line: up to date, syncing (items to go and a time estimate), first sync, paused or not connected; then the current rate, what this run moved, the folder, what is left out, and **Conflicts**, **Unresolved**, **Retrying** and **Skipped** when there are any. `status -v` adds the internals for a bug report |
+| `synosync status` | first line: up to date, syncing (items to go and a time estimate), first sync, paused or not connected; then the current rate, what this run moved, the folder, what is left out, and **Conflicts**, **Unresolved**, **Retrying**, **Waiting** (failed, retried next pass, with the reason) and **Skipped** when there are any; **Server** shows a held change poll. `status -v` adds the internals for a bug report |
 | `synosync conflicts` | the keep-both `_Conflict` copies created so far |
 | `synosync drops` | work the engine gave up on, each with the path and the reason |
 | `synosync log -n 200 -f` | the daemon log; the Linux systemd service logs to `journalctl --user -u synosync` instead |

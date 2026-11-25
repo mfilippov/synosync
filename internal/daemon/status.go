@@ -12,6 +12,7 @@ import (
 
 	"github.com/mfilippov/synosync/internal/auth"
 	"github.com/mfilippov/synosync/internal/config"
+	"github.com/mfilippov/synosync/internal/engine"
 	"github.com/mfilippov/synosync/internal/ipc"
 	"github.com/mfilippov/synosync/internal/store"
 	"github.com/mfilippov/synosync/internal/transport"
@@ -239,6 +240,9 @@ func (d *Daemon) buildStatus(ctx context.Context) (ipc.StatusReport, error) {
 	diskFull := false
 	stuck := 0
 	var stuckOps []ipc.StuckEntry
+	retrying := 0
+	var retryingOps []ipc.StuckEntry
+	var pollingSince time.Time
 	var appliedOps, transferred int64
 	var movingFor time.Duration
 	var lastContact time.Time
@@ -260,6 +264,11 @@ func (d *Daemon) buildStatus(ctx context.Context) (ipc.StatusReport, error) {
 			}
 			lastApplied = last
 		}
+		if re, ok := eng.(retryEngine); ok {
+			retrying = re.RetryingOps()
+			retryingOps = d.retryingEntries(re, vs)
+			pollingSince = re.PollingSince()
+		}
 	}
 
 	return ipc.StatusReport{
@@ -270,6 +279,9 @@ func (d *Daemon) buildStatus(ctx context.Context) (ipc.StatusReport, error) {
 		DiskFull:         diskFull,
 		Stuck:            stuck,
 		StuckOps:         stuckOps,
+		Retrying:         retrying,
+		RetryingOps:      retryingOps,
+		PollingSince:     pollingSince,
 		AppliedOps:       appliedOps,
 		TransferredBytes: transferred,
 		MovingFor:        movingFor,
@@ -998,24 +1010,7 @@ func (d *Daemon) stuckEntries(eng engineControl, views []ipc.ViewStatus) []ipc.S
 		d.log.Warn("daemon: could not list the stuck operations for status", "err", err)
 		return nil
 	}
-	names := make(map[uint64]string, len(views))
-	for _, v := range views {
-		names[v.ID] = v.Name
-	}
-	out := make([]ipc.StuckEntry, 0, len(ops))
-	for _, o := range ops {
-		out = append(out, ipc.StuckEntry{
-			ViewID:    o.ViewID,
-			ViewName:  names[o.ViewID],
-			Op:        o.Type,
-			Direction: o.Direction,
-			Path:      o.Path,
-			NewPath:   o.NewPath,
-			Failures:  o.Failures,
-			Reason:    o.Reason,
-		})
-	}
-	return out
+	return toStuckEntries(ops, views)
 }
 
 // pauseReasonToken classifies the pool's pause sentinel into the stable ConnState
@@ -1076,4 +1071,45 @@ func excludedPaths(v config.Views, viewID uint64) []string {
 // leaves the rate out of status.
 type recentEngine interface {
 	Recent() (opsPerSec, bytesPerSec float64, ok bool, lastApplied time.Time)
+}
+
+// retryEngine reports the ops that failed a drain but are still below the stuck threshold, and
+// the long poll in flight; an engine (or test double) without it leaves both out of status.
+type retryEngine interface {
+	RetryingOps() int
+	RetryingDetails(limit int) ([]engine.StuckOp, error)
+	PollingSince() time.Time
+}
+
+// toStuckEntries resolves the view names of the engine's failing-op listing for display.
+func toStuckEntries(ops []engine.StuckOp, views []ipc.ViewStatus) []ipc.StuckEntry {
+	names := make(map[uint64]string, len(views))
+	for _, v := range views {
+		names[v.ID] = v.Name
+	}
+	out := make([]ipc.StuckEntry, 0, len(ops))
+	for _, o := range ops {
+		out = append(out, ipc.StuckEntry{
+			ViewID:    o.ViewID,
+			ViewName:  names[o.ViewID],
+			Op:        o.Type,
+			Direction: o.Direction,
+			Path:      o.Path,
+			NewPath:   o.NewPath,
+			Failures:  o.Failures,
+			Reason:    o.Reason,
+		})
+	}
+	return out
+}
+
+// retryingEntries is stuckEntries for the below-threshold band. A failure is swallowed to nil
+// for the same reason: it is detail under an operability hint.
+func (d *Daemon) retryingEntries(re retryEngine, views []ipc.ViewStatus) []ipc.StuckEntry {
+	ops, err := re.RetryingDetails(maxStuckEntries)
+	if err != nil {
+		d.log.Warn("daemon: could not list the retrying operations for status", "err", err)
+		return nil
+	}
+	return toStuckEntries(ops, views)
 }

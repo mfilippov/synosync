@@ -17,6 +17,7 @@ import (
 
 	"github.com/mfilippov/synosync/internal/auth"
 	"github.com/mfilippov/synosync/internal/config"
+	"github.com/mfilippov/synosync/internal/engine"
 	"github.com/mfilippov/synosync/internal/ipc"
 	"github.com/mfilippov/synosync/internal/store"
 	"github.com/mfilippov/synosync/internal/transport"
@@ -166,6 +167,71 @@ func TestBuildStatusSurfacesStuckOps(t *testing.T) {
 	}
 	if rep.Stuck != 4 {
 		t.Errorf("Stuck: got %d, want 4", rep.Stuck)
+	}
+}
+
+// retryFakeEngine adds the optional retryEngine report to fakeEngine.
+type retryFakeEngine struct {
+	fakeEngine
+	retrying     int
+	retryingOps  []engine.StuckOp
+	retryingErr  error
+	pollingSince time.Time
+}
+
+func (e *retryFakeEngine) RetryingOps() int { return e.retrying }
+func (e *retryFakeEngine) RetryingDetails(int) ([]engine.StuckOp, error) {
+	return e.retryingOps, e.retryingErr
+}
+func (e *retryFakeEngine) PollingSince() time.Time { return e.pollingSince }
+
+// TestBuildStatusSurfacesRetryingOpsAndThePoll pins the plumbing for issue #6: an op that failed
+// below the stuck threshold, with its reason and view name, and the poll in flight reach the
+// report; an engine without the optional report leaves both empty.
+func TestBuildStatusSurfacesRetryingOpsAndThePoll(t *testing.T) {
+	st := openTestStore(t)
+	d, _ := newStatusDaemon(t, st, config.Config{Server: config.Server{Host: "h", Port: 6690}})
+
+	d.setEngine(&fakeEngine{})
+	rep, err := d.buildStatus(context.Background())
+	if err != nil {
+		t.Fatalf("buildStatus (plain engine): %v", err)
+	}
+	if rep.Retrying != 0 || rep.RetryingOps != nil || !rep.PollingSince.IsZero() {
+		t.Errorf("an engine without the retry report produced %d/%v/%v", rep.Retrying, rep.RetryingOps, rep.PollingSince)
+	}
+
+	since := time.Now().Add(-3 * time.Minute)
+	eng := &retryFakeEngine{
+		retrying: 1,
+		retryingOps: []engine.StuckOp{{ViewID: 1, Type: "rename", Direction: "outbound",
+			Path: "a.conf", NewPath: "b.conf", Failures: 2, Reason: "the connection to the server was lost"}},
+		pollingSince: since,
+	}
+	d.setEngine(eng)
+	rep, err = d.buildStatus(context.Background())
+	if err != nil {
+		t.Fatalf("buildStatus: %v", err)
+	}
+	if rep.Retrying != 1 || len(rep.RetryingOps) != 1 {
+		t.Fatalf("Retrying = %d, RetryingOps = %+v, want one entry", rep.Retrying, rep.RetryingOps)
+	}
+	if got := rep.RetryingOps[0]; got.Op != "rename" || got.NewPath != "b.conf" || got.Failures != 2 ||
+		got.Reason != "the connection to the server was lost" {
+		t.Errorf("RetryingOps[0] = %+v", got)
+	}
+	if !rep.PollingSince.Equal(since) {
+		t.Errorf("PollingSince = %v, want %v", rep.PollingSince, since)
+	}
+
+	// A listing failure keeps the count and drops only the detail.
+	eng.retryingErr = errors.New("scan failed")
+	rep, err = d.buildStatus(context.Background())
+	if err != nil {
+		t.Fatalf("buildStatus (listing failure): %v", err)
+	}
+	if rep.Retrying != 1 || rep.RetryingOps != nil {
+		t.Errorf("listing failure: Retrying = %d, RetryingOps = %+v, want the count and no detail", rep.Retrying, rep.RetryingOps)
 	}
 }
 
