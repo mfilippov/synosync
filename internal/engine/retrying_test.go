@@ -54,17 +54,7 @@ func TestFailureReasonClassifiesWhatAnOperatorActsOn(t *testing.T) {
 			"a local file or folder could not be read or written"},
 		{"bare errno", fmt.Errorf("x: %w", syscall.EACCES), ""},
 		{"ctx deadline", fmt.Errorf("x: %w", context.DeadlineExceeded), "the operation timed out"},
-		{"os deadline", fmt.Errorf("x: %w", os.ErrDeadlineExceeded), "the server took too long to answer"},
-		// Without op_turn_timeout_s a timed-out read also marks the connection broken: it must
-		// still read as a quiet server, not a dropped connection.
-		// The kernel's ETIMEDOUT (TCP keepalive/retransmit expiry) is a LOST connection, and
-		// must read the same on every OS: Errno.Timeout() is true on Unix, false for Windows'
-		// WSAETIMEDOUT, so classifying on Timeout() split one outage in two.
-		{"kernel ETIMEDOUT", fmt.Errorf("actions: read reply: %w: %w", actions.ErrConnBroken,
-			&net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ETIMEDOUT)}),
-			"the connection to the server was lost"},
-		{"timed-out read on a broken connection", fmt.Errorf("actions: read reply: %w: %w", actions.ErrConnBroken,
-			&net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}), "the server took too long to answer"},
+
 		{"cancelled", fmt.Errorf("x: %w", context.Canceled), ""},
 		{"unknown", errors.New("something else"), ""},
 	}

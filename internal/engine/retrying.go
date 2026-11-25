@@ -34,7 +34,8 @@ const reasonBlocked = "waiting behind another operation on the same path"
 // interface: syscall.Errno and the context/os deadline sentinels all satisfy net.Error, so that
 // match named a local EACCES or a Windows sharing violation "the connection to the server was
 // lost" - sending the operator to the network for a file problem. A local *fs.PathError or
-// *os.LinkError is therefore classified first; net.OpError carries no PathError, so a socket error cannot land
+// *os.LinkError is therefore classified first; net.OpError carries no PathError, so a socket
+// error cannot land
 // there.
 func failureReason(err error) string {
 	var dnsErr *net.DNSError
@@ -58,15 +59,12 @@ func failureReason(err error) string {
 		return "a local file or folder could not be read or written"
 	case errors.As(err, &dnsErr):
 		return "the server's name could not be resolved"
-	case errors.Is(err, os.ErrDeadlineExceeded):
-		// A socket deadline WE set expired: the server went quiet, it did not drop us. Such a
-		// turn also marks the connection broken, so this is tested before the ErrConnBroken arm.
-		// Deliberately not net.OpError.Timeout(): that is also true for the kernel's ETIMEDOUT
-		// (TCP keepalive/retransmit expiry - a dropped Wi-Fi, VPN or NAS), which IS a lost
-		// connection, and on Unix only (Windows' WSAETIMEDOUT reports false), so the same
-		// outage would be worded per OS. os.ErrDeadlineExceeded matches no Errno.
-		return "the server took too long to answer"
 	case errors.Is(err, actions.ErrConnBroken), errors.As(err, &opErr), errors.Is(err, net.ErrClosed):
+		// No "slow server" class is carved out of this one: a server that goes quiet surfaces
+		// as ErrTransferStalled (the idle watchdog) or errTurnTimeout above, and netctx rewrites
+		// a socket deadline into the context error, so nothing reaches here as a deadline. Nor
+		// is net.OpError.Timeout() consulted: it is true for the kernel's ETIMEDOUT (keepalive
+		// expiry - a dropped Wi-Fi, VPN or NAS), which IS a lost connection, and on Unix only.
 		// Not a bare io.EOF: a large upload whose local file shrank mid-stream ends in one
 		// too (actions/resume.go), and a real transport failure already carries one of these.
 		return "the connection to the server was lost"
@@ -116,8 +114,8 @@ const maxUnclassifiedLogsPerPass = 20
 // logUnclassifiedFailureLocked logs an op's unclassified failure, once per failure streak (the
 // caller latches it on true). `status` then shows "see synosync log", and below stuckThreshold
 // the log otherwise carried only the first error of each drain pass (loop.go's "queue drain
-// failed"), so for any other op the pointer led nowhere. Classified failures are named in `status` itself and are
-// not logged here; the cap is per drain pass, and reports false when it bit. Callers hold stuckMu.
+// failed"), so for any other op the pointer led nowhere. Classified failures are named in
+// `status` itself and are not logged here; the cap is per drain pass, and reports false when it bit. Callers hold stuckMu.
 func (e *Engine) logUnclassifiedFailureLocked(qo store.QueuedOp, err error) bool {
 	if e.unclassifiedPass != e.drainPass {
 		e.unclassifiedPass, e.unclassifiedLogged = e.drainPass, 0

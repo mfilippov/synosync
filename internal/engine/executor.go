@@ -150,7 +150,7 @@ func (e *Engine) noteOpFailure(qo store.QueuedOp, err error) {
 		latch.stuck = true
 		attrs := []any{
 			"type", qo.Type, "direction", qo.Direction, "view", qo.ViewID,
-			"path", qo.Path, "seq", qo.Seq, "failures", e.opFailures[qo.Seq],
+			"path", qo.Path, "seq", qo.Seq, "failures", e.opFailures[qo.Seq], "err", err,
 		}
 		// Name the server's own rejection code when the op is being refused by an errno the
 		// action layer does not map: an anonymous stuck counter tells an operator nothing,
